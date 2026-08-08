@@ -1,0 +1,20 @@
+<!--
+  アクティビティバーのアイコン。横棒グラフ (画面本体のバーと同じ見立て)。
+
+  **単色で描き、色は currentColor に任せてください。** VSCode はこの SVG を
+  CSS のマスクとして使うので効くのは形 (alpha) だけですが、万一そのまま
+  画像として描かれた場合でもテーマに追従できるようにしておきます。
+
+  **左の軸線を消さないでください。** 長さの違う横棒を3本並べただけだと、
+  24px では「左揃え」のアイコンと見分けが付きません。軸があるだけで
+  グラフとして読めるようになります。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <path d="M3.6 4.2v15.6" fill="none" stroke="currentColor" stroke-width="1.6"
+        stroke-linecap="round"/>
+  <g fill="currentColor">
+    <rect x="6.2" y="5.2" width="13.2" height="3.2" rx="1.6"/>
+    <rect x="6.2" y="10.4" width="7.6" height="3.2" rx="1.6"/>
+    <rect x="6.2" y="15.6" width="10.6" height="3.2" rx="1.6"/>
+  </g>
+</svg>

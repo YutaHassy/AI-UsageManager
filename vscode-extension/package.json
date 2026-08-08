@@ -1,0 +1,176 @@
+{
+  "name": "ai-usage-manager",
+  "displayName": "AI-UsageManager",
+  "description": "%extension.description%",
+  "version": "1.2.1",
+  "publisher": "YutaHassy",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YutaHassy/AI-UsageManager.git"
+  },
+  "bugs": {
+    "url": "https://github.com/YutaHassy/AI-UsageManager/issues"
+  },
+  "homepage": "https://github.com/YutaHassy/AI-UsageManager#readme",
+  "pricing": "Free",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "claude",
+    "chatgpt",
+    "gemini",
+    "usage",
+    "quota"
+  ],
+  "galleryBanner": {
+    "color": "#1F2430",
+    "theme": "dark"
+  },
+  "main": "./extension.js",
+  "l10n": "./l10n",
+  "activationEvents": [
+    "onStartupFinished",
+    "onWebviewPanel:aiUsageManager.usage"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "%capabilities.untrustedWorkspaces.description%",
+      "restrictedConfigurations": [
+        "aiUsageManager.pythonPath",
+        "aiUsageManager.guiPythonPath"
+      ]
+    }
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aiUsageManager",
+          "title": "%viewsContainer.aiUsageManager.title%",
+          "icon": "media/activitybar.svg"
+        }
+      ]
+    },
+    "views": {
+      "aiUsageManager": [
+        {
+          "type": "webview",
+          "id": "aiUsageManager.launcher",
+          "name": "%view.launcher.name%"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "aiUsageManager.open",
+        "title": "%command.open.title%",
+        "category": "AI-UsageManager"
+      },
+      {
+        "command": "aiUsageManager.refreshAll",
+        "title": "%command.refreshAll.title%",
+        "category": "AI-UsageManager"
+      },
+      {
+        "command": "aiUsageManager.addAccount",
+        "title": "%command.addAccount.title%",
+        "category": "AI-UsageManager"
+      },
+      {
+        "command": "aiUsageManager.editAccount",
+        "title": "%command.editAccount.title%",
+        "category": "AI-UsageManager"
+      },
+      {
+        "command": "aiUsageManager.deleteAccount",
+        "title": "%command.deleteAccount.title%",
+        "category": "AI-UsageManager"
+      },
+      {
+        "command": "aiUsageManager.relogin",
+        "title": "%command.relogin.title%",
+        "category": "AI-UsageManager"
+      },
+      {
+        "command": "aiUsageManager.openSettings",
+        "title": "%command.openSettings.title%",
+        "category": "AI-UsageManager"
+      },
+      {
+        "command": "aiUsageManager.showLog",
+        "title": "%command.showLog.title%",
+        "category": "AI-UsageManager"
+      },
+      {
+        "command": "aiUsageManager.restartBackend",
+        "title": "%command.restartBackend.title%",
+        "category": "AI-UsageManager"
+      },
+      {
+        "command": "aiUsageManager.selectLanguage",
+        "title": "%command.selectLanguage.title%",
+        "category": "AI-UsageManager"
+      }
+    ],
+    "configuration": {
+      "title": "AI-UsageManager",
+      "properties": {
+        "aiUsageManager.pythonPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "%configuration.pythonPath.description%"
+        },
+        "aiUsageManager.guiPythonPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "%configuration.guiPythonPath.description%"
+        },
+        "aiUsageManager.language": {
+          "type": "string",
+          "default": "auto",
+          "enum": ["auto", "en", "ja", "ko", "zh-cn"],
+          "enumDescriptions": [
+            "%configuration.language.enum.auto%",
+            "%configuration.language.enum.en%",
+            "%configuration.language.enum.ja%",
+            "%configuration.language.enum.ko%",
+            "%configuration.language.enum.zh-cn%"
+          ],
+          "description": "%configuration.language.description%"
+        },
+        "aiUsageManager.autoRefreshMinutes": {
+          "type": "number",
+          "default": 0,
+          "enum": [0, 1, 5, 10, 30, 60],
+          "enumDescriptions": [
+            "%configuration.autoRefreshMinutes.enum.0%",
+            "%configuration.autoRefreshMinutes.enum.1%",
+            "%configuration.autoRefreshMinutes.enum.5%",
+            "%configuration.autoRefreshMinutes.enum.10%",
+            "%configuration.autoRefreshMinutes.enum.30%",
+            "%configuration.autoRefreshMinutes.enum.60%"
+          ],
+          "description": "%configuration.autoRefreshMinutes.description%"
+        },
+        "aiUsageManager.refreshOnOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.refreshOnOpen.description%"
+        },
+        "aiUsageManager.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.showStatusBar.description%"
+        }
+      }
+    }
+  }
+}

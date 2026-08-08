@@ -1,0 +1,437 @@
+/*
+ * 色はすべて VSCode のテーマ変数から取ります。**固定色を書かないでください。**
+ * ライトテーマの利用者には、暗い配色を決め打ちした画面だけが浮きます。
+ *
+ * 使用率の3色 (緑・黄・赤) だけは意味を持つ色なので、テーマの
+ * charts.* を使って「テーマに馴染むが意味は変わらない」ようにしています。
+ */
+
+html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
+    color: var(--vscode-foreground);
+    background-color: var(--vscode-editor-background);
+}
+
+/* ---------------- 上部のツールバー ---------------- */
+
+.toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--vscode-panel-border);
+    background-color: var(--vscode-editor-background);
+}
+
+.toolbar .spacer {
+    flex: 1 1 auto;
+}
+
+.tabs {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+}
+
+.tab {
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 4px 10px;
+    border: none;
+    border-radius: 4px;
+    color: var(--vscode-foreground);
+    background: transparent;
+    cursor: pointer;
+    font-size: inherit;
+    font-family: inherit;
+}
+
+.tab:hover {
+    background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.tab.active {
+    background-color: var(--vscode-list-activeSelectionBackground);
+    color: var(--vscode-list-activeSelectionForeground);
+}
+
+.progress {
+    color: var(--vscode-descriptionForeground);
+    white-space: nowrap;
+}
+
+button.primary {
+    padding: 4px 14px;
+    border: none;
+    border-radius: 4px;
+    color: var(--vscode-button-foreground);
+    background-color: var(--vscode-button-background);
+    cursor: pointer;
+    font-size: inherit;
+    font-family: inherit;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+button.primary:hover:not(:disabled) {
+    background-color: var(--vscode-button-hoverBackground);
+}
+
+button.primary:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* ツールバーの記号ボタン (⚙)。文字の大きさに依存しない正方形にして、
+   隣の「更新」と高さを揃える。 */
+button.icon-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    color: var(--vscode-foreground);
+    background: transparent;
+    cursor: pointer;
+    font-size: 15px;
+    font-family: inherit;
+    line-height: 1;
+}
+
+button.icon-button:hover {
+    background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+button.ghost {
+    padding: 3px 10px;
+    border: 1px solid var(--vscode-button-secondaryBackground, var(--vscode-panel-border));
+    border-radius: 4px;
+    color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+    background-color: var(--vscode-button-secondaryBackground, transparent);
+    cursor: pointer;
+    font-size: inherit;
+    font-family: inherit;
+}
+
+button.ghost:hover {
+    background-color: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground));
+}
+
+/* ---------------- 本文 ----------------
+   **縦に縮めたときは、中身を潰さずスクロールさせます。** ここを
+   flex コンテナにして子を伸縮させると、行の高さが足りなくなった瞬間に
+   文字が上下に欠けて読めなくなります。通常のブロック配置のまま
+   overflow-y に逃がすのが、どの高さでも壊れない唯一の形です。 */
+
+.content {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 12px;
+}
+
+.panel {
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 6px;
+    padding: 12px;
+    background-color: var(--vscode-editorWidget-background, transparent);
+}
+
+.panel-title {
+    margin: 0 0 10px 0;
+    font-size: 1.1em;
+    font-weight: 600;
+    color: var(--vscode-descriptionForeground);
+}
+
+.hint {
+    margin: 8px 0 0 0;
+    color: var(--vscode-descriptionForeground);
+}
+
+.sep {
+    border: none;
+    border-top: 1px solid var(--vscode-panel-border);
+    margin: 12px 0;
+}
+
+/* ---------------- サマリー ---------------- */
+
+.summary-row {
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    border-radius: 5px;
+    background-color: var(--vscode-list-hoverBackground);
+    cursor: pointer;
+}
+
+.summary-row:hover {
+    background-color: var(--vscode-list-activeSelectionBackground);
+    color: var(--vscode-list-activeSelectionForeground);
+}
+
+.summary-row:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: -1px;
+}
+
+.summary-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 20px;
+    margin-bottom: 4px;
+}
+
+.summary-name {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dot {
+    flex: 0 0 auto;
+}
+
+.summary-lines {
+    padding-left: 22px;
+}
+
+/* ---------------- 枠 (メトリクス) の1行 ----------------
+   枠名と残り時間は固定幅、バーだけが伸びます。そうすることで、
+   アカウントをまたいでも枠をまたいでもバーの左右が揃い、
+   長さをそのまま比べられます。 */
+
+.metric-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 22px;
+    margin-bottom: 3px;
+}
+
+/* 幅は「日本語で足りる幅」ではありません。同じ枠名が英語では倍近くなります
+   (「当月コスト」/ "Cost this month")。**それでも固定幅は外しません** — 上の
+   とおり、バーの左右が揃っていることがこの表の読み方そのものだからです。
+   はみ出したぶんは省略記号にし、全文は title (ツールチップ) で読めるように
+   してあります (main.js の updateMetricLine)。 */
+.metric-label {
+    flex: 0 0 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--vscode-descriptionForeground);
+}
+
+.metric-cell {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* 残り時間も言語で伸びます ("3日 2時間 5分後" / "3d 2h 5m 후")。単位は
+   Intl の narrow 表記にして、いちばん長くなる英語でも収まる幅にしてあります
+   (main.js の unitText)。 */
+.metric-remaining {
+    flex: 0 0 128px;
+    text-align: right;
+    white-space: nowrap;
+    color: var(--vscode-charts-yellow);
+    font-weight: 600;
+}
+
+.metric-note {
+    color: var(--vscode-descriptionForeground);
+}
+
+/* ---------------- バー ---------------- */
+
+.bar {
+    position: relative;
+    height: 18px;
+    border-radius: 4px;
+    overflow: hidden;
+    background-color: var(--vscode-progressBar-background, var(--vscode-input-background));
+    border: 1px solid var(--vscode-panel-border);
+}
+
+.bar-large {
+    height: 22px;
+}
+
+.bar-fill {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    border-radius: 3px;
+}
+
+.bar-fill.ok {
+    background-color: var(--vscode-charts-green);
+}
+
+.bar-fill.caution {
+    background-color: var(--vscode-charts-yellow);
+}
+
+.bar-fill.limited {
+    background-color: var(--vscode-charts-red);
+}
+
+.bar-text {
+    position: relative;
+    display: block;
+    line-height: 18px;
+    text-align: center;
+    font-weight: 600;
+    /* 塗りの上に重なるので、明暗どちらの帯でも読める色にする */
+    color: var(--vscode-editor-foreground);
+    mix-blend-mode: normal;
+    text-shadow: 0 0 3px var(--vscode-editor-background);
+}
+
+.bar-large .bar-text {
+    line-height: 22px;
+}
+
+/* ---------------- 詳細 ---------------- */
+
+.account-name {
+    margin: 0;
+    font-size: 1.25em;
+    font-weight: 700;
+}
+
+.account-source {
+    margin: 4px 0 0 0;
+    color: var(--vscode-descriptionForeground);
+    word-break: break-all;
+}
+
+.metric-block {
+    margin-bottom: 14px;
+}
+
+.metric-title {
+    margin-bottom: 4px;
+    min-height: 18px;
+}
+
+.metric-value {
+    font-size: 1.4em;
+    font-weight: 700;
+    color: var(--vscode-charts-blue);
+}
+
+.metric-times {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 3px;
+    min-height: 18px;
+}
+
+.metric-reset {
+    color: var(--vscode-descriptionForeground);
+}
+
+.detail-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 24px;
+    flex-wrap: wrap;
+}
+
+/* 操作ボタンの並び。**縮めたときは折り返します。** 詰めて並べると、
+   幅の狭いエディタグループでは端のボタンが画面外へ出て押せなくなります。 */
+.actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+}
+
+button.danger {
+    border-color: var(--vscode-charts-red);
+    color: var(--vscode-charts-red);
+}
+
+button.ghost:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* ログイン画面を開いている間の案内 */
+.banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--vscode-focusBorder);
+    border-radius: 5px;
+    background-color: var(--vscode-editorWidget-background, transparent);
+}
+
+.banner-text {
+    font-weight: 600;
+}
+
+.detail-status {
+    font-weight: 600;
+}
+
+.error-box {
+    border: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-panel-border));
+    background-color: var(--vscode-inputValidation-errorBackground, transparent);
+    border-radius: 5px;
+    padding: 10px;
+}
+
+.error-title {
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+
+.error-body {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* ---------------- 下部のステータス ---------------- */
+
+.statusline {
+    flex: 0 0 auto;
+    padding: 5px 12px;
+    border-top: 1px solid var(--vscode-panel-border);
+    color: var(--vscode-descriptionForeground);
+    min-height: 18px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.hidden {
+    display: none;
+}
