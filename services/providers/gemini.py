@@ -100,6 +100,20 @@ DevTools で実際の通信を確認して判明した経路です (2026-08 実�
     返らなかった場合は更新せずに済ませますが、記録は残します
     (静かに済ませると、失効したときに何も手がかりが残りません)。
 
+    **有力な原因: 送る Cookie を絞りすぎていました** (2026-08-09)。参照実装
+    (HanaokaYuzu/Gemini-API) と突き合わせたところ、URL もボディも更新間隔も
+    こちらと同じで、違いは送る Cookie だけでした。あちらはセッションの jar を
+    まるごと送るのに対し、こちらは 1PSID 系の3つしか持っていませんでした。
+    **更新用のトークン __Secure-1PSIDRTS は、ブラウザのプロファイルには
+    入っているのに設定に残していなかったため、更新の要求にも付いていません。**
+    KEPT_COOKIES を広げて様子を見ます (どれが必須かは Google 側の応答から
+    分からないため、延命できなかったときは送った Cookie の名前を残します)。
+
+    **なお、これは失効までの時間を延ばすだけです。** 更新は取得に成功した
+    直後にしか走らないので、アプリを閉じている間は何も延命しません。
+    自動更新 (aiUsageManager.autoRefreshMinutes) を切っていると、更新の
+    機会そのものがほぼ無くなります。
+
   **これは「延命」であって「復旧」ではありません。** 実測で切り分けた結果:
 
     1PSID + 有効な 1PSIDTS  → 200 (新しい 1PSIDTS が返る)
@@ -147,9 +161,14 @@ ROTATE_BODY = '[000,"-0000000000000000000"]'
 # (実測では2回目が即 429 だった)。一方で空けすぎると期限切れに間に合わない。
 ROTATE_INTERVAL_SEC = 600
 
-# 更新を最後に行った時刻。プロバイダは取得のたびに作り直されるため、
-# 間隔の記録はインスタンスではなくモジュールに持たせる。
-_last_rotation: Dict[str, float] = {}
+# 更新を最後に行った時刻と、そのとき持っていた __Secure-1PSIDTS の指紋。
+# アカウント (1PSID のハッシュ) ごとに {キー: (monotonic 秒, TS の指紋)} で持ちます。
+#
+# **プロバイダはシングルトンです** (services/providers/__init__.py が import 時に
+# 1個だけ作り、全アカウントで使い回します)。したがってインスタンス属性でも
+# 寿命は同じですが、「どのアカウントの話か」をキーで分ける必要があるため、
+# 置き場所ではなく辞書であることに意味があります。
+_last_rotation: Dict[str, tuple] = {}
 
 # WIZ_global_data の中のキー名。難読化された短い名前ですが、
 # Gemini Web を扱う非公式クライアント各種がそろってこの名前を使っています。
@@ -158,11 +177,41 @@ _WIZ_BL = "cfb2h"
 _WIZ_SID = "FdrFJe"
 
 # 保存する Cookie の許可リスト。
-# **Google の Cookie ヘッダには SID / SAPISID など、Gemini に限らず
-# Google アカウント全体を操作できるものが混ざります。** 使わないものを
+#
+# **Google の Cookie ヘッダには SID / SAPISID / HSID / SSID など、Gemini に
+# 限らず Google アカウント全体を操作できるものが混ざります。** 使わないものを
 # 抱え込むと、この設定ファイルが漏れたときの被害がそのまま広がるため、
 # ここに挙げたものだけを残して他は捨てます。
-KEPT_COOKIES = ("__Secure-1PSID", "__Secure-1PSIDTS", "__Secure-1PSIDCC")
+#
+# **ただし絞りすぎると延命できません** (2026-08 に判明)。ここが 1PSID 系の
+# 3つだけだった間、RotateCookies は 200 を返しながら新しい __Secure-1PSIDTS を
+# 返さず、その日のうちに貼り直しになっていました。参照実装
+# (HanaokaYuzu/Gemini-API) と突き合わせると、URL もボディも更新間隔 (600秒) も
+# こちらと同じで、**違いは送る Cookie だけ**でした。あちらは絞らず、セッションが
+# 持っている jar をまるごと送ります。
+#
+# そこで、更新に関わるものだけを足してあります:
+#
+#   __Secure-1PSIDRTS / __Secure-3PSIDRTS … 名前のとおり更新用のトークン。
+#       **ブラウザのプロファイルには入っているのに、ここで捨てていました。**
+#   NID                                   … アカウントの識別に使われる。
+#   __Secure-3PSID / -3PSIDTS / -3PSIDCC  … 1PSID 系の三者間文脈版。
+#       RotateCookies の応答は __Secure-3PSIDCC も返してきます。
+#
+# **SID / SAPISID / HSID / SSID / APISID は足していません。** これらは
+# SAPISIDHASH 認証に使えてしまい、Gemini どころか Google アカウント全体に
+# 手が届きます。「漏れたときの被害を広げない」という上の判断はそのままです。
+#
+# **どれが必須かは実測で確かめられていません** (Google 側の応答からは
+# 「足りない」と分かる手がかりが返りません)。そのため rotate_cookies は、
+# 延命できなかったときに送った Cookie の**名前**を記録に残します。
+KEPT_COOKIES = (
+    "__Secure-1PSID", "__Secure-1PSIDTS", "__Secure-1PSIDCC",
+    "__Secure-1PSIDRTS",
+    "__Secure-3PSID", "__Secure-3PSIDTS", "__Secure-3PSIDCC",
+    "__Secure-3PSIDRTS",
+    "NID",
+)
 
 # 枠の種別 → 画面に出す名前。Gemini 自身の表記に合わせています
 # (「5時間枠」のような、向こうが名乗っていない名前を作らない)。
@@ -418,17 +467,36 @@ class GeminiProvider(UsageProvider):
         jar = parse_cookie_header(cookie)
         key = _rotation_key(jar)
 
-        last = _last_rotation.get(key)
-        if last is not None and time.monotonic() - last < ROTATE_INTERVAL_SEC:
-            logger.debug("前回の Cookie 更新から間もないため、今回は見送ります。")
-            return None
-        _last_rotation[key] = time.monotonic()
+        # いま持っている __Secure-1PSIDTS の指紋。値そのものを持ち歩くと
+        # 例外表示やデバッガに出てしまうため、ハッシュにしておきます
+        # (_rotation_key と同じ考え方)。
+        current_ts = hashlib.sha256(
+            jar.get("__Secure-1PSIDTS", "").encode("utf-8")).hexdigest()[:16]
 
-        # 送るのは 1PSID 系だけ。更新先は accounts.google.com、つまり
-        # Google アカウント全体を扱うドメインなので、この更新に要らない
-        # Cookie (SAPISID など) まで渡さない。
-        sending = "; ".join(f"{name}={value}" for name, value in jar.items()
-                            if name.startswith("__Secure-1PSID"))
+        last = _last_rotation.get(key)
+        if last is not None:
+            last_at, last_ts = last
+            # **貼り直された直後は間隔を待ちません。** キーは __Secure-1PSID の
+            # ハッシュですが、あれは長命な方なので**貼り直しても変わりません**。
+            # 時刻だけで見ていたため、利用者が新しい Cookie を貼った直後 —
+            # いちばん延命を急ぎたいところ — で最大10分待たされていました。
+            # TS が入れ替わっていれば別の資格情報なので、すぐ延命に入ります。
+            if last_ts == current_ts and time.monotonic() - last_at < ROTATE_INTERVAL_SEC:
+                logger.debug("前回の Cookie 更新から間もないため、今回は見送ります。")
+                return None
+
+        # **記録は投げる前に付けます。** 失敗しても間隔を空けたいためです
+        # (401 なら何度叩いても 401 ですし、続けて叩くと 429 が返ります)。
+        # 瞬断で1回落ちると次まで待つことになりますが、その間も取得自体は
+        # 動いており、待つ側に倒す方が安全です。
+        _last_rotation[key] = (time.monotonic(), current_ts)
+
+        # **保存してあるものは全部送ります。** 以前はここで 1PSID 系だけに
+        # 絞っていましたが、保存の時点で既に KEPT_COOKIES に絞られているため、
+        # ここで二重に削ると更新用のトークン (RTS) や NID まで落ちていました。
+        # 「アカウント全体を操作できる Cookie を渡さない」という当初の意図は
+        # KEPT_COOKIES 側で担保してあります (あちらの説明を参照)。
+        sending = "; ".join(f"{name}={value}" for name, value in jar.items())
 
         try:
             response = self.http.post_response(
@@ -453,22 +521,39 @@ class GeminiProvider(UsageProvider):
             # 200 は返っているが延命はできていない。**これが「まだ不要」なのか
             # 「延命に失敗している」のかは分かっていません** (モジュール冒頭の
             # 説明を参照)。失効したときに手がかりが残るよう、記録は残します。
+            #
+            # **送った Cookie の名前も残します** (値は絶対に出しません)。
+            # 絞りすぎが原因かどうかは、これが無いと後から確かめられません。
             logger.warning(
                 "Cookie の更新は 200 でしたが __Secure-1PSIDTS が返らず、"
-                "期限を延ばせていません (返った Cookie: %s)。"
+                "期限を延ばせていません (送った Cookie: %s / 返った Cookie: %s)。"
                 "このまま失効した場合は貼り直しが要ります。",
-                list(response.cookies.keys()),
+                sorted(jar), sorted(response.cookies.keys()),
             )
             return None
 
-        # 返ってきたものだけ差し替える。1PSID は長命なので触らない。
+        # **返ってきたものは全部差し替えます。** 以前は 1PSIDTS と 1PSIDCC しか
+        # 見ておらず、一緒に返る 3PSIDCC や更新用のトークンを古いまま残して
+        # いました。次の更新はその古い値を送ることになります。
+        # 許可リストに載っているものだけを取り込むので、ここから設定ファイルに
+        # 新しい種類の Cookie が増えることはありません。
         updated = dict(jar)
+        for name in KEPT_COOKIES:
+            value = response.cookies.get(name)
+            if value:
+                updated[name] = value
         updated["__Secure-1PSIDTS"] = new_ts
-        new_cc = response.cookies.get("__Secure-1PSIDCC")
-        if new_cc:
-            updated["__Secure-1PSIDCC"] = new_cc
 
-        logger.info("__Secure-1PSIDTS を更新しました。")
+        # **更新後の TS で記録を上書きします。** ここを古いままにすると、
+        # 次の取得で「TS が入れ替わっている = 貼り直された」と誤って読み、
+        # 間隔を無視して毎回叩きに行きます (429 のもと)。
+        _last_rotation[key] = (
+            time.monotonic(),
+            hashlib.sha256(new_ts.encode("utf-8")).hexdigest()[:16],
+        )
+
+        logger.info("__Secure-1PSIDTS を更新しました (差し替えた Cookie: %s)。",
+                    sorted(n for n in updated if updated[n] != jar.get(n)))
         return "; ".join(f"{name}={value}" for name, value in updated.items())
 
     def _call_usage_rpc(self, cookie: str, tokens: Dict[str, str]) -> str:

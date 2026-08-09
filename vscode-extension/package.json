@@ -2,7 +2,7 @@
   "name": "ai-usage-manager",
   "displayName": "AI-UsageManager",
   "description": "%extension.description%",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "publisher": "YutaHassy",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -148,7 +148,7 @@
         },
         "aiUsageManager.autoRefreshMinutes": {
           "type": "number",
-          "default": 0,
+          "default": 1,
           "enum": [0, 1, 5, 10, 30, 60],
           "enumDescriptions": [
             "%configuration.autoRefreshMinutes.enum.0%",
