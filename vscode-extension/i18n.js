@@ -218,7 +218,7 @@ function t(message, args) {
 }
 
 /**
- * ログイン画面を伴う操作の名前。**原文 (=キー) をここに1つだけ置きます。**
+ * アカウントに対する操作の名前。**原文 (=キー) をここに1つだけ置きます。**
  *
  * 同じ文言を extension.js (通知の見出し) と store.js (進行中の表示 guiBusy) の
  * 両方が使います。以前はそれぞれにリテラルが書いてあり、たまたま一致して
@@ -227,8 +227,13 @@ function t(message, args) {
  * しかもその食い違いは、どちらのファイルを見ても分かりません。
  *
  * ここにある文字列は t() に渡す前の原文です。訳すのは使う側です。
+ *
+ * **remove だけは別ウィンドウを伴いません。** 削除に窓は要らないので、
+ * バックエンドの中だけで終わります。ここに並んでいるからといって、
+ * 別ウィンドウの完了を待つ道 (extension.js の runGuiCommand / store.js の
+ * runGuiOperation) へ通さないでください。
  */
-const GUI_OPERATIONS = {
+const ACCOUNT_OPERATIONS = {
     add: 'Adding an account',
     edit: 'Editing an account',
     relogin: 'Signing in again',
@@ -295,5 +300,5 @@ function bundleLiteral(catalog) {
 
 module.exports = {
     init, invalidate, t, language, configuredLanguage, LANGUAGES,
-    formatList, webviewBundle, bundleLiteral, GUI_OPERATIONS,
+    formatList, webviewBundle, bundleLiteral, ACCOUNT_OPERATIONS,
 };

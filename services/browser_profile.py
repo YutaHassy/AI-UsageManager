@@ -17,13 +17,18 @@ Claude.ai のセッション Cookie は、ログイン/ログアウトのたび�
 import logging
 import os
 import re
-import shutil
 
 from PySide6.QtCore import QDateTime, QUrl
 from PySide6.QtNetwork import QNetworkCookie
 from PySide6.QtWebEngineCore import QWebEngineProfile
 
-from services.config_manager import default_config_dir
+# 置き場所と破棄には Qt が要らないので、Qt を import しない側 (profile_storage)
+# に置いてあります。**同じことを二重に書かないでください。** ここで取り込み
+# 直しているのは、今までどおり browser_profile.profile_dir のように呼べる形を
+# 保つためです。
+from services.profile_storage import (  # noqa: F401
+    has_saved_session, profile_dir, profiles_root, remove_profile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,16 +68,6 @@ def chrome_user_agent(profile: QWebEngineProfile) -> str:
 # 同じ保存先に対して QWebEngineProfile を二重に作ると Qt が警告を出し、
 # 一方の書き込みが失われるため、必ずここで使い回す。
 _profiles = {}
-
-
-def profiles_root() -> str:
-    return os.path.join(default_config_dir(), "profiles")
-
-
-def profile_dir(account_id: str) -> str:
-    # account_id は uuid4 なのでそのままディレクトリ名に使える
-    safe = "".join(ch for ch in str(account_id) if ch.isalnum() or ch in "-_")
-    return os.path.join(profiles_root(), safe or "default")
 
 
 def get_profile(account_id: str) -> QWebEngineProfile:
@@ -172,26 +167,17 @@ def build_cookies(cookie_header: str, domain: str) -> list:
     return cookies
 
 
-def has_saved_session(account_id: str) -> bool:
-    """このアカウントのログイン状態がディスクに残っているかの目安。"""
-    return os.path.exists(os.path.join(profile_dir(account_id), "Cookies"))
-
-
 def forget_profile(account_id: str) -> None:
-    """アカウント削除時などにプロファイルを破棄します。"""
+    """アカウント削除時などにプロファイルを破棄します。
+
+    ディスク側を消すのは profile_storage の担当です。**こちらにしか無いのは
+    使い回し用の辞書 (_profiles) の後始末で、そのためにこの入口があります。**
+    Qt を持たないプロセスから消すときは profile_storage.remove_profile()
+    を直接呼んでください (そちらには片付ける辞書がありません)。
+    """
     key = str(account_id)
     _profiles.pop(key, None)
-
-    directory = profile_dir(key)
-    if not os.path.exists(directory):
-        return
-    try:
-        shutil.rmtree(directory)
-        logger.info("ブラウザプロファイルを削除しました: %s", directory)
-    except OSError as e:
-        # QtWebEngine がファイルを掴んだままだと消せないことがある。
-        # 残っても実害はないので警告に留める。
-        logger.warning("ブラウザプロファイルを削除できませんでした: %s", e)
+    remove_profile(key)
 
 
 def release_all() -> None:

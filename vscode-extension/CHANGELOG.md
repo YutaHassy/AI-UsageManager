@@ -5,6 +5,24 @@ All notable changes to the AI-UsageManager extension are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-08-19
+
+### Fixed
+
+- **Deleting an account asked for PySide6.** Removing an account needs no
+  browser window, but it was routed through the same helper process as adding,
+  editing and signing in again. On a Python without PySide6 the extension
+  answered "PySide6 is required to show the sign-in window", so an account
+  could not be deleted from the extension at all. Deletion now happens inside
+  the backend: the account is dropped from `config.json` and its saved sign-in
+  state (the browser profile, cookies included) is removed on the spot.
+  `requests` and `urllib3` stay the only requirements for everything except the
+  sign-in window itself.
+
+  Deleting is refused while a sign-in window is open, because that window
+  writes back the account list it loaded when it opened and would bring the
+  deleted account back.
+
 ## [1.2.2] - 2026-08-09
 
 ### Fixed

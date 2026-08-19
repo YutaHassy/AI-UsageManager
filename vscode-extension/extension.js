@@ -16,7 +16,7 @@ const vscode = require('vscode');
 
 const { Backend } = require('./backend');
 const {
-    formatList, GUI_OPERATIONS, init: initI18n, invalidate: invalidateI18n,
+    formatList, ACCOUNT_OPERATIONS, init: initI18n, invalidate: invalidateI18n,
     configuredLanguage, LANGUAGES, t,
 } = require('./i18n');
 const { LauncherViewProvider } = require('./launcher');
@@ -434,7 +434,7 @@ const CANCEL_GRACE_MS = 5000;
  * ウィンドウを一つも作らないまま固まる例が出ており、中止できないと利用者に
  * 残る手段は VSCode の再読み込みだけになります。
  *
- * @param {string} operation i18n.GUI_OPERATIONS の値 (英語の原文)。**訳す前の
+ * @param {string} operation i18n.ACCOUNT_OPERATIONS の値 (英語の原文)。**訳す前の
  *   ものを渡してください。** 画面に出すぶんはここで t() を通し、ログには
  *   原文のまま残します。ログを読むのは開発者なので、利用者の表示言語によって
  *   検索できる語が変わるのは困ります。
@@ -589,7 +589,7 @@ async function addAccount() {
     }
 
     const before = new Set(store.accounts.map((a) => a.id));
-    if (!await runGuiCommand(GUI_OPERATIONS.add, () => store.addAccount())) {
+    if (!await runGuiCommand(ACCOUNT_OPERATIONS.add, () => store.addAccount())) {
         return;
     }
 
@@ -623,7 +623,7 @@ async function editAccount(accountId) {
     }
     // 中止・失敗したときは取得しません。触れていないアカウントに通信を
     // 1回足すだけで、画面に出る内容は変わりません。
-    if (!await runGuiCommand(GUI_OPERATIONS.edit, () => store.editAccount(account.id))) {
+    if (!await runGuiCommand(ACCOUNT_OPERATIONS.edit, () => store.editAccount(account.id))) {
         return;
     }
     if (store.fetchableAccounts().some((a) => a.id === account.id)) {
@@ -648,7 +648,7 @@ async function relogin(accountId) {
                 { provider: account.providerLabel, credential: account.credentialLabel }));
         return;
     }
-    if (!await runGuiCommand(GUI_OPERATIONS.relogin, () => store.relogin(account.id))) {
+    if (!await runGuiCommand(ACCOUNT_OPERATIONS.relogin, () => store.relogin(account.id))) {
         return;
     }
     if (store.fetchableAccounts().some((a) => a.id === account.id)) {
@@ -679,11 +679,39 @@ async function deleteAccount(accountId) {
         return;
     }
 
-    // 中止された可能性があるので、結果を見てから知らせます。中止したのに
-    // 「削除しました」と出ると、消えていないものを消えたと思わせます。
-    if (!await runGuiCommand(GUI_OPERATIONS.remove, () => store.deleteAccount(account.id))) {
+    // **runGuiCommand は通しません。** 削除に別ウィンドウは要らないので
+    // (backend/cli.py の do_delete_account を参照)、待たせる通知も中止の
+    // 手立ても要りません。ここを GUI 側の道に通していたために、PySide6 が
+    // 入っていない環境では削除まで「PySide6 を入れてください」で止まって
+    // いました。
+    try {
+        // 進み具合は**通知ではなくウィンドウ左下**に出します。ふつうは一瞬で
+        // 終わりますが、保存されたログイン状態 (ブラウザのキャッシュを含む)
+        // を消すのに数秒かかることがあり、その間まったく無反応に見えるのは
+        // 「押しても何も起きない」と同じです。通知にしないのは、一瞬で
+        // 消える通知が毎回点滅するだけになるためです。
+        await vscode.window.withProgress(
+            {
+                location: vscode.ProgressLocation.Window,
+                title: t(ACCOUNT_OPERATIONS.remove),
+            },
+            () => store.deleteAccount(account.id),
+        );
+    } catch (e) {
+        const message = /** @type {Error} */ (e).message;
+        log.appendLine(`[extension] ${ACCOUNT_OPERATIONS.remove} に失敗: ${message}`);
+        const showLog = t('Show Log');
+        const picked = await vscode.window.showErrorMessage(
+            t('{operation} could not be completed.\n{reason}', {
+                operation: t(ACCOUNT_OPERATIONS.remove), reason: message,
+            }),
+            showLog);
+        if (picked === showLog) {
+            log.show(true);
+        }
         return;
     }
+
     vscode.window.setStatusBarMessage(
         t("Deleted '{name}'", { name: account.name }), 5000);
 }
