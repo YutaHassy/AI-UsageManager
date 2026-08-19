@@ -5,6 +5,80 @@ All notable changes to the AI-UsageManager extension are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-08-19
+
+ChatGPT accounts stopped working after a while and said "sign in again". That
+was unhelpful in every case and wrong in one of them — pasting again could
+never fix it. Two separate things were behind it, and the error message hid
+both.
+
+### Added
+
+- **ChatGPT sessions are extended on every fetch, so they no longer expire on
+  their own.** `/api/auth/session` is a rolling session: each call issues a new
+  `sessionToken` and pushes the expiry about 90 days out. The newly issued
+  value was thrown away every time and the one pasted at setup was kept
+  forever, so once that one fell out of the refresh chain the account was dead
+  and only a new paste brought it back. The provider now hands the new value
+  back as `result["credential"]`, which the settings writer already knew how to
+  save — Gemini has been doing this through `rotate_cookies` for a while.
+
+  Renewal runs only after the usage call succeeds, because a session can only
+  be extended while it is still alive. It is throttled to once an hour: the
+  value is a JWE that is re-encrypted on every call, so it differs every time
+  and "has it changed" cannot decide anything. The throttle is keyed on the
+  account rather than on the stored value — a value key would change the moment
+  it renewed and would never throttle a second time.
+
+- **Whatever the server said is now part of the error.** `401` and `403` shared
+  one branch that discarded the response body, so "Could not parse your
+  authentication token" and "Workspace is not authorized in this region" — which
+  need opposite fixes — both came out as "Cookie is invalid or expired".
+
+- **Workspace accounts send the headers `backend-api` expects.**
+  `ChatGPT-Account-Id` and `x-openai-internal-codex-residency` are read out of
+  the access token the app already holds, and are added only when those claims
+  are present, so personal accounts are unaffected.
+
+### Fixed
+
+- **A session ChatGPT itself cannot refresh is now named as such.**
+  `/api/auth/session` can answer `200` with valid user data, an `error` of
+  `RefreshAccessTokenError`, and an `accessToken` that expired days ago. The
+  error was ignored and the expired token sent anyway, which produced a `401`
+  and a "sign in again" that was misleading — the cookie was fine, so pasting
+  it again gave exactly the same result. It is now caught when pasting *and*
+  when fetching, and says that the browser session has to be signed out of and
+  back into.
+
+- **Bot protection is no longer reported as an expired credential.** A `403`
+  carrying `Cf-Mitigated` is a challenge from the site's bot protection, not a
+  credential problem. It now says so and quotes the `CF-RAY`, instead of asking
+  for a sign-in that would not have helped.
+
+- **Pasted credentials survive a dirty copy.** The extraction gave up on
+  anything that did not start with `{`, which disabled the regular-expression
+  fallback exactly where it was needed: a BOM, a JSON viewer's "Pretty-print"
+  label, or line numbers in front of the JSON were enough. The whole paste was
+  then saved as the credential *without a warning*, because the shape check
+  accepted any value containing an `=` — and a signed-in session page always
+  contains one, in the profile image URL. A trailing `",` left over from
+  hand-copying a single line is stripped as well.
+
+- **A credential containing newlines no longer escapes as "unexpected error".**
+  Sending one raised `ValueError` from `http.client`, which is not a `requests`
+  exception and so was never wrapped; the reason reached neither the screen nor
+  the log.
+
+- **The expiry of an exchanged access token is checked too**, not only that of
+  a pasted one.
+
+- **The signed-out session page is told apart from an expired cookie.**
+  `/api/auth/session` now answers `200` with a `WARNING_BANNER` key rather than
+  an empty object, and the key names received are included in the message so
+  that a change of shape on ChatGPT's side is visible next time instead of
+  being read as "the cookie expired".
+
 ## [1.3.0] - 2026-08-19
 
 Four things the desktop build carried were lost when the repository was

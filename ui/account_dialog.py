@@ -168,7 +168,10 @@ class ManualCredentialDialog(QDialog):
 
         # 形が違うものは知らせるが、通すかどうかは利用者に委ねる。
         # 有効性を最終的に決めるのは取得先のサーバーであってこのアプリではない。
-        warning = self.provider.validate_credential(value)
+        # **貼り付けそのものへの警告を先に見ること。** 絞ったあとの値からは
+        # 読み取れない事実 (貼り付け元が伝えてきたエラー) がここにしかない。
+        warning = (self.provider.validate_paste(pasted)
+                   or self.provider.validate_credential(value))
         if warning:
             reply = QMessageBox.question(
                 self, t("Confirm"),
@@ -748,6 +751,9 @@ class AccountDialog(QDialog):
         # 欄へ直接貼られた場合も、救済ダイアログと同じ取り出しを通す。
         # 貼り方は入口によって変わらないので、扱いも変えない。
         pasted = self.cookie_input.toPlainText().strip()
+        # **絞る前に見ること。** normalize は貼り付け元が伝えてきたエラーごと
+        # 捨てるので、下の setPlainText を通ったあとでは二度と読めない。
+        paste_warning = provider.validate_paste(pasted) if pasted else ""
         if pasted:
             normalized = provider.normalize_credential(pasted)
             if normalized != pasted:
@@ -789,7 +795,7 @@ class AccountDialog(QDialog):
 
                 # 欄へ直接貼られた場合も、救済ダイアログと同じ確認を通す
                 # (取り違えは入口を問わず同じように起きる)。
-                warning = provider.validate_credential(cookie)
+                warning = paste_warning or provider.validate_credential(cookie)
                 if warning:
                     reply = QMessageBox.question(
                         self, t("Confirm"),

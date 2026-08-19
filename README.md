@@ -127,6 +127,46 @@ is a catalog that's been edited out of sync with the others.
   Claude.ai cookie is only ever sent to `claude.ai`). Nothing is relayed to
   any third party.
 
+### How long a credential lasts
+
+Two providers extend their own credential; the rest last as long as the
+service decides.
+
+- **ChatGPT is extended on every fetch.** `/api/auth/session` is a rolling
+  session: each call issues a new `sessionToken` and pushes the expiry about
+  90 days out. The provider hands the newly issued value back as
+  `result["credential"]`, and `vscode-extension/backend/cli.py` writes it into
+  the config — at most once an hour, because the value is a JWE that is
+  re-encrypted on every call and therefore differs every time
+  (`RENEW_INTERVAL_SEC` in `services/providers/chatgpt.py`).
+- **Gemini is renewed the same way**, through `GeminiProvider.rotate_cookies`.
+  `__Secure-1PSIDTS` is short-lived, so the interval there is 10 minutes.
+- **Claude and Antigravity have no renewal.**
+
+**Renewal only runs after the usage call succeeds.** A session can only be
+extended while it is still alive, so there is nothing to try once one has
+expired — which is also why the browser-profile fallback
+(`ui/session_refresher.py`) exists and is a different mechanism.
+
+Three limits are worth knowing, because none of them can be worked around
+from here:
+
+1. **Nothing is renewed while the app is not running.** Extension happens
+   during a fetch. Leave it unused for longer than the window — about 90 days
+   for ChatGPT — and the credential expires anyway.
+2. **An account saved as a bare `accessToken` cannot be extended.** There is no
+   cookie to exchange for a new one, so it expires in about ten days. Pasting
+   the session page again stores the `sessionToken` instead, which is
+   renewable; the extraction prefers it when both are present.
+3. **ChatGPT can fail to refresh on its own side.** `/api/auth/session` then
+   answers `200` with valid user data, an `error` of `RefreshAccessTokenError`,
+   and an `accessToken` that expired days ago. The cookie itself is still
+   good, so **pasting the same value again gives exactly the same result** —
+   the browser session has to be signed out of and back into. This is detected
+   both when pasting and when fetching (`_session_error` in
+   `services/providers/chatgpt.py`) rather than reported as a generic
+   "sign in again", which is what it looked like before.
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
@@ -181,5 +221,26 @@ python vscode-extension/build_vsix.py
 **資格情報とプライバシー**: Cookie・API キーは Windows DPAPI で暗号化して
 保存します。DPAPI が使えない環境では平文になり、その場合は画面に警告が
 出ます。どのサービスの資格情報も、そのサービス自身にしか送信しません。
+
+**資格情報の寿命**: ChatGPT と Gemini は、取得に成功するたびに資格情報を
+延命して保存し直します (ChatGPT はセッションを約90日先へ押し出し、書き戻しは
+1時間おき)。Claude と Antigravity に延命の仕組みはありません。**延命は取得が
+成功したあとにだけ走ります** — セッションは生きている間しか延ばせないためです。
+
+次の3点は、このアプリの側では回避できません。
+
+1. **アプリを動かしていない間は延命されません。** 延命は取得のついでに
+   行うので、枠 (ChatGPT なら約90日) を超えて使わなければ失効します。
+2. **素の accessToken を貼って登録したアカウントは延命できません。**
+   交換元の Cookie が無いため、約10日で失効します。セッション画面を貼り直せば
+   `sessionToken` の側が保存され、延命できる形になります。
+3. **ChatGPT 側でトークン更新が壊れることがあります。** そのとき
+   `/api/auth/session` は 200 とアカウント情報を返しながら
+   `error: RefreshAccessTokenError` と**既に失効した** accessToken を返します。
+   Cookie 自体は生きているので、**同じ値を貼り直しても結果は変わりません** —
+   ブラウザでサインアウトして入り直す必要があります。
+
+詳細は `services/providers/chatgpt.py` の `RENEW_INTERVAL_SEC` と
+`_session_error` の説明にあります。
 
 **ライセンス**: MIT ([`LICENSE`](LICENSE) を参照)。

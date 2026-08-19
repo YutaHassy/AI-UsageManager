@@ -130,6 +130,66 @@ def redact(text: str) -> str:
     return result
 
 
+# Cloudflare がボット判定でリクエストを止めたときに付けてくる応答ヘッダ。
+#
+# **これが付いた 403 は資格情報の問題ではありません。** 見分けないと、
+# ボットとして弾かれただけの利用者の画面に「要再ログイン」が出て、
+# 何度貼り直しても直らないものを貼り直し続けることになります
+# (chatgpt.com は現に User-Agent を見て 403 を返します)。
+#
+# **判定はこのヘッダ1つに絞ってください。** 「Content-Type が text/html なら
+# ボット判定」としてはいけません。Cookie が本当に失効したときにも
+# 403 + HTML のエラーページが返りうるので、それを auth_error=False にすると
+# 今度は正しい「要再ログイン」を落とします (誤診の向きが変わるだけです)。
+CF_MITIGATED = "cf-mitigated"
+
+
+def server_reason(response) -> str:
+    """応答本文にサーバが書いた失敗理由があれば取り出します。
+
+    **401 の本文を捨てないための関数です。** 以前はステータスだけを見て
+    「認証エラー (401): Cookie が無効か期限切れです」と決め打ちしていました。
+    しかし chatgpt.com の backend-api が 401 に載せてくる理由は一種類では
+    ありません。
+
+        "Could not parse your authentication token."      → 貼り直しで直る
+        "Workspace is not authorized in this region."     → 貼り直しても直らない
+
+    どちらも画面には同じ文言で出ていたため、直し方が正反対なのに利用者にも
+    ログにも区別が残りませんでした。
+
+    **取り出すのは message と code だけです。** 本文を丸ごと載せてはいけません。
+    上の redact は既知のパターンしか伏せないので、まだ知らない形式の秘密が
+    そのまま画面とログに出ます。
+    """
+    try:
+        data = response.json()
+    except ValueError:
+        # 本文が JSON でない (HTML のエラーページ等)。理由は取り出せません。
+        # なお backend-api の 401 は Content-Type が text/plain のくせに
+        # 本文は JSON です。requests の .json() は Content-Type を見ないので
+        # ここで読めます — Content-Type で分岐を足すと、この経路が死にます。
+        return ""
+    if not isinstance(data, dict):
+        return ""
+
+    error = data.get("error")
+    if isinstance(error, str):
+        message, code = error, ""
+    elif isinstance(error, dict):
+        message, code = error.get("message"), error.get("code")
+    else:
+        message = data.get("detail") or data.get("message")
+        code = data.get("code")
+
+    message = redact(message.strip())[:300] if isinstance(message, str) else ""
+    code = redact(code.strip())[:60] if isinstance(code, str) else ""
+
+    if message and code:
+        return f"{message} ({code})"
+    return message or code
+
+
 def insecure_ssl_enabled() -> bool:
     """TLS 検証の無効化が環境変数で明示的に許可されているかを返します。"""
     for name in (ENV_INSECURE_SSL, LEGACY_ENV_INSECURE_SSL):
@@ -344,13 +404,41 @@ class HttpClient:
 
         logger.debug("%s ステータス: %s", what, response.status_code)
         logger.debug("%s レスポンス: %s", what, redact(response.text[:200]))
+        # 切り分けに要るのはこの3つです。「資格情報が切れた」のか
+        # 「ボットとして弾かれた」のかは、本文よりこちらを見るほうが早く
+        # 分かります (次に同じ疑いが出たとき実測をやり直さずに済みます)。
+        logger.debug("%s ヘッダ: cf-mitigated=%s cf-ray=%s content-type=%s", what,
+                     response.headers.get(CF_MITIGATED),
+                     response.headers.get("cf-ray"),
+                     response.headers.get("content-type"))
+
+        # **ボット判定を認証エラーとして扱わないこと。** 詳細は CF_MITIGATED の
+        # 説明を参照。ステータス分岐より前に1箇所だけ置いて、403 だけでなく
+        # 429 / 503 に乗ってきた場合もまとめて拾います。
+        # 401 は除きます — 認証の失敗であることに変わりはないためです。
+        if response.status_code != 401 and CF_MITIGATED in response.headers:
+            raise UsageError(t(
+                "Blocked by the site's bot protection ({status}). "
+                "This is not a problem with {credential}.\n"
+                "Wait a little and try again. CF-RAY: {ray}",
+                status=response.status_code, credential=t(self.credential_label),
+                ray=response.headers.get("cf-ray") or t("(none)"),
+            ))
 
         if response.status_code in (401, 403):
-            raise UsageError(
-                t("Authentication error ({status}): {credential} is invalid or expired.",
-                  status=response.status_code, credential=t(self.credential_label)),
-                auth_error=True,
-            )
+            message = t(
+                "Authentication error ({status}): {credential} is invalid or expired.",
+                status=response.status_code, credential=t(self.credential_label))
+            # **本文にサーバが書いた理由があるなら必ず添えること。**
+            # ここを捨てていたせいで、直し方の違う複数の 401 が
+            # すべて同じ「要再ログイン」に潰れていました (server_reason 参照)。
+            reason = server_reason(response)
+            if reason:
+                # **差し込み名に message は使えません。** t() の第1引数が
+                # message なので、キーワードがぶつかって TypeError になります。
+                message = t("{detail}\nThe server said: {reason}",
+                            detail=message, reason=reason)
+            raise UsageError(message, auth_error=True)
         if response.status_code == 407:
             raise UsageError(t(
                 "Proxy authentication error (407): "
@@ -745,6 +833,19 @@ class UsageProvider:
         Cookie 認証を使わない取得先では空を返してください (預けるものが無い)。
         """
         return "" if self.auth_kind != AUTH_COOKIE else (pasted or "").strip()
+
+    def validate_paste(self, pasted: str) -> str:
+        """**貼り付けられた内容そのもの**に不安があるとき、確認メッセージを返します。
+
+        validate_credential は normalize_credential を通した**あと**の値を
+        受け取ります。つまり抽出の過程で捨てたものは、あちらでは見えません。
+        貼り付け元が「この情報は今おかしい」と伝えてきている場合
+        (ChatGPT の /api/auth/session が返す error など) は、
+        捨てる前のここで拾ってください。
+
+        問題なければ空文字を返してください。
+        """
+        return ""
 
     def validate_credential(self, value: str) -> str:
         """貼り付けられた資格情報に不安があるとき、確認メッセージを返します。

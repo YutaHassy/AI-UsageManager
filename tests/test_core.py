@@ -55,6 +55,8 @@ from services.providers import (                                      # noqa: E4
 from services.providers.anthropic_cost import AnthropicCostProvider   # noqa: E402
 from services.providers.antigravity import AntigravityProvider        # noqa: E402
 from services.providers.aoai_cost import AoaiCostProvider             # noqa: E402
+from services.providers import base as provider_base                 # noqa: E402
+from services.providers import chatgpt as chatgpt_module             # noqa: E402
 from services.providers.chatgpt import ChatGPTProvider                # noqa: E402
 from services.providers.claude import ClaudeProvider                  # noqa: E402
 from services.providers.codex import CodexProvider                    # noqa: E402
@@ -1004,6 +1006,464 @@ class TestChatGPTPastedAccessToken(unittest.TestCase):
         # Cookie 名に "eyJ..." 風の値が入っていても Cookie は Cookie
         provider.fetch_usage(f"__Secure-next-auth.session-token={self.make_jwt()}")
         self.assertEqual(urls[0], "https://chatgpt.com/api/auth/session")
+
+
+class TestChatGPTPastedCredentialIsRobust(unittest.TestCase):
+    """ブラウザの画面を丸ごと貼る経路が、黙ってゴミを保存しないこと。
+
+    この経路には JSON 以外のものがいくらでも混ざって届く (整形ビューアの
+    ラベル、行番号、先頭の BOM、手で選んだときに付いてくる閉じ引用符)。
+    取り出しに失敗すると貼り付け全文がそのまま資格情報として保存され、
+    **追加は成功するのに、以後の取得が必ず「要再ログイン」になる。**
+    利用者から見ると原因がどこにも出ないので、ここを実測で固めておく。
+    """
+
+    make_jwt = staticmethod(TestChatGPTPastedAccessToken.make_jwt)
+
+    def paste(self, **overrides) -> str:
+        payload = {
+            "user": {
+                "id": "user-1",
+                "email": "someone@example.com",
+                # Google アカウントだと必ず "=" を含む。これがあるせいで
+                # 「= があれば Cookie だろう」という判定が素通りしていた。
+                "image": "https://lh3.googleusercontent.com/a/ACg8ocK=s96-c",
+            },
+            "expires": "2026-11-04T01:20:35.342Z",
+            "accessToken": self.token,
+        }
+        payload.update(overrides)
+        return json.dumps(payload, indent=2)
+
+    def setUp(self):
+        self.token = self.make_jwt(exp=time.time() + 3600)
+        self.provider = ChatGPTProvider()
+
+    def keep(self, pasted: str) -> str:
+        return self.provider.normalize_credential(pasted)
+
+    def test_junk_in_front_of_the_json_no_longer_swallows_the_token(self):
+        """先頭に1文字でも余計なものが付くと全滅していた経路。
+
+        以前は _extract_session_token が `startswith("{")` で即座に諦めて
+        いたため、途中切れを救うための正規表現もろとも無効になっていた。
+        """
+        body = self.paste()
+        for label, pasted in (
+            ("整形ビューアのラベル", "Pretty-print\n" + body),
+            ("先頭の BOM", "\ufeff" + json.dumps(json.loads(body))),
+            ("タブ見出し", "JSON  生データ  ヘッダー\n" + body),
+        ):
+            with self.subTest(label):
+                self.assertEqual(self.keep(pasted), self.token)
+
+    def test_a_hand_copied_token_drops_its_closing_quote_and_comma(self):
+        """`eyJ....",` の形。JWT 判定を素通りし、警告ゼロで 401 になっていた。"""
+        self.assertEqual(self.keep('%s",' % self.token), self.token)
+
+    def test_a_paste_with_no_token_is_reported_even_without_a_leading_brace(self):
+        """ログインしていないブラウザの画面を貼ったとき、黙って保存しない。"""
+        pasted = "Pretty-print\n" + json.dumps({"WARNING_BANNER": "DO NOT SHARE"})
+        kept = self.keep(pasted)
+        self.assertNotEqual(kept, "")
+        self.assertTrue(self.provider.validate_credential(kept),
+                        "取り出せなかった貼り付けが無警告で保存される")
+
+    def test_a_pasted_json_is_not_accepted_as_a_cookie(self):
+        """"=" が1つあるだけで Cookie 扱いしないこと。
+
+        貼り付け元には必ず "=" が混ざっている (上の user.image を参照)。
+        ここが緩いと、JSON 全文が Cookie ヘッダに載って送られる。
+        """
+        self.assertFalse(chatgpt_module._looks_like_cookie(self.paste()))
+        self.assertTrue(chatgpt_module._looks_like_cookie("a=1; b=2"))
+        self.assertTrue(chatgpt_module._looks_like_cookie(
+            "__Secure-next-auth.session-token=%s" % self.token))
+
+    def test_a_credential_with_newlines_never_reaches_the_network(self):
+        """改行を含む値を送ると http.client が UsageError の外へ例外を投げる。
+
+        そうなると画面には「予期しないエラー」としか出ず、原因が残らない。
+        通信の前に止めて、貼り直しを促すところまでを固定する。
+        """
+        def fail(*args, **kwargs):
+            self.fail("この値で通信してはいけません")
+
+        self.provider.http.get_json = fail
+        with self.assertRaises(UsageError) as ctx:
+            self.provider.fetch_usage("name=value\nmore=junk")
+        self.assertTrue(ctx.exception.auth_error)
+
+
+class TestChatGPTTellsWhatItGotBack(unittest.TestCase):
+    """取得に失敗したとき、何が返ってきたのかが残ること。
+
+    chatgpt.com が未ログイン時に WARNING_BANNER だけを返すようになったのに
+    気づけなかったのは、この経路がキー名を1つもログにも画面にも残さず、
+    ただ「Cookie が失効している可能性があります」とだけ言っていたため。
+    """
+
+    def respond(self, payload):
+        provider = ChatGPTProvider()
+        provider.http.get_json = lambda url, headers, what, params=None: payload
+        with self.assertRaises(UsageError) as ctx:
+            provider.fetch_usage("__Secure-next-auth.session-token=whatever")
+        return ctx.exception
+
+    def test_a_signed_out_session_is_told_apart_from_an_expired_cookie(self):
+        """貼り直しても直らないものを貼り直させない。
+
+        ログアウトしたブラウザの画面と、Cookie が切れた場合とでは、
+        利用者の取るべき次の一手が違う (前者はまずサインインしてもらう)。
+        文言は翻訳されて出るので、ここでは字面ではなく
+        「別の案内になること」と「キー名が残ること」を見る。
+        """
+        signed_out = self.respond({"WARNING_BANNER": "DO NOT SHARE"})
+        expired = self.respond({"user": {}, "expires": "2026-01-01T00:00:00Z"})
+        self.assertTrue(signed_out.auth_error)
+        self.assertIn("WARNING_BANNER", str(signed_out))
+        self.assertNotEqual(str(signed_out), str(expired))
+
+    def test_an_unexpected_shape_lists_the_keys_it_received(self):
+        """形が変わったことに、次は気づけるようにしておく。"""
+        error = self.respond({"user": {}, "expires": "2026-01-01T00:00:00Z"})
+        self.assertTrue(error.auth_error)
+        self.assertIn("expires", str(error))
+        self.assertIn("user", str(error))
+
+    def test_the_values_themselves_are_never_put_in_the_message(self):
+        """出すのはキー名だけ。ここに出るものはパスワード同然。"""
+        error = self.respond({"WARNING_BANNER": "DO NOT SHARE", "secret": "sk-ant-xyz"})
+        self.assertNotIn("sk-ant-xyz", str(error))
+        self.assertNotIn("DO NOT SHARE", str(error))
+
+
+class TestChatGPTWorkspaceHeaders(unittest.TestCase):
+    """ワークスペース所属のアカウントが 401 で弾かれないこと。
+
+    Authorization だけでは足りない。データレジデンシーが有効な
+    ワークスペースは x-openai-internal-codex-residency が無いと 401
+    (「Workspace is not authorized in this region.」) を返し、それは画面では
+    「要再ログイン」に見える — **貼り直しても直らないのに。**
+    値は accessToken の中に入っているので、追加の問い合わせは要らない。
+    """
+
+    @staticmethod
+    def token(**claims) -> str:
+        def segment(obj):
+            return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
+        payload = {"sub": "user-1", "exp": time.time() + 3600}
+        if claims:
+            payload["https://api.openai.com/auth"] = claims
+        return f"{segment({'alg': 'RS256'})}.{segment(payload)}.notarealsignature"
+
+    def headers_for(self, token) -> dict:
+        provider = ChatGPTProvider()
+        seen = {}
+
+        def fake_get_json(url, headers, what, params=None):
+            seen.update(headers)
+            return dict(TestChatGPTUsageParsing.USAGE_RESPONSE)
+
+        provider.http.get_json = fake_get_json
+        provider.fetch_usage(token)
+        return seen
+
+    def test_account_id_and_residency_come_from_the_token_itself(self):
+        headers = self.headers_for(self.token(
+            chatgpt_account_id="acct-123", chatgpt_data_residency="eu"))
+        self.assertEqual(headers["ChatGPT-Account-Id"], "acct-123")
+        self.assertEqual(headers["x-openai-internal-codex-residency"], "eu")
+
+    def test_compute_residency_is_used_when_data_residency_is_absent(self):
+        headers = self.headers_for(self.token(chatgpt_compute_residency="us"))
+        self.assertEqual(headers["x-openai-internal-codex-residency"], "us")
+
+    def test_a_personal_token_adds_nothing(self):
+        """個人の Plus/Pro を壊さないこと。無いものは付けない。"""
+        headers = self.headers_for(self.token())
+        self.assertNotIn("ChatGPT-Account-Id", headers)
+        self.assertNotIn("x-openai-internal-codex-residency", headers)
+
+    def test_the_request_still_looks_like_a_browser(self):
+        """Cloudflare は UA 単体ではなくヘッダの組み合わせも見る。"""
+        headers = self.headers_for(self.token())
+        for name in ("Sec-Fetch-Site", "Sec-Ch-Ua", "Accept-Language"):
+            self.assertIn(name, headers)
+
+
+class TestHttpFailuresAreLegible(unittest.TestCase):
+    """失敗の理由が、画面とログに残ること。
+
+    401 の本文を捨てていたため、直し方が正反対の失敗が全部同じ
+    「認証エラー (401)」に潰れていた。403 も 401 と同じ枝に入れていたので、
+    ボット判定で弾かれただけの利用者にも「要再ログイン」が出ていた。
+    """
+
+    class Response:
+        def __init__(self, status, body="", headers=None):
+            self.status_code = status
+            self.text = body
+            self.headers = headers or {}
+
+        def json(self):
+            return json.loads(self.text)
+
+    class Session:
+        def __init__(self, response):
+            self.response = response
+
+        def request(self, method, url, **kwargs):
+            return self.response
+
+    def fetch(self, response):
+        client = provider_base.HttpClient(credential_label="Cookie")
+        client._session = self.Session(response)
+        with self.assertRaises(UsageError) as ctx:
+            client.get_json("https://example.test/usage", {}, "usage")
+        return ctx.exception
+
+    def test_the_reason_the_server_gave_is_kept(self):
+        error = self.fetch(self.Response(401, json.dumps({"error": {
+            "message": "Workspace is not authorized in this region.",
+            "code": "unauthorized_region"}})))
+        self.assertTrue(error.auth_error)
+        self.assertIn("Workspace is not authorized in this region.", str(error))
+        self.assertIn("unauthorized_region", str(error))
+
+    def test_a_plain_401_without_a_body_still_reads_as_an_auth_error(self):
+        error = self.fetch(self.Response(401, "<html>no</html>"))
+        self.assertTrue(error.auth_error)
+
+    def test_a_cloudflare_block_is_not_reported_as_an_expired_credential(self):
+        """ボット判定を「要再ログイン」にしない。貼り直しても直らない。"""
+        error = self.fetch(self.Response(
+            403, "<html>Just a moment</html>",
+            {"cf-mitigated": "challenge", "cf-ray": "abc123-NRT"}))
+        self.assertFalse(error.auth_error)
+        self.assertIn("abc123-NRT", str(error))
+
+    def test_a_403_without_the_cloudflare_header_is_still_an_auth_error(self):
+        """条件を広げすぎて、正しい「要再ログイン」を落とさないこと。"""
+        error = self.fetch(self.Response(403, "<html>forbidden</html>"))
+        self.assertTrue(error.auth_error)
+
+    def test_a_401_carrying_the_cloudflare_header_stays_an_auth_error(self):
+        error = self.fetch(self.Response(401, "", {"cf-mitigated": "challenge"}))
+        self.assertTrue(error.auth_error)
+
+    def test_secrets_in_the_body_are_not_echoed_back(self):
+        error = self.fetch(self.Response(401, json.dumps({"error": {
+            "message": "bad token sk-ant-abcdefghijklmnopqrstuvwxyz"}})))
+        self.assertNotIn("sk-ant-abcdefghijklmnopqrstuvwxyz", str(error))
+
+
+class TestChatGPTRefreshFailure(unittest.TestCase):
+    """ChatGPT 側でトークンの更新が壊れている状態を、そう言えること。
+
+    実測 (2026-08-19)。Cookie は生きていて /api/auth/session は 200 を返し、
+    user も expires も正常なのに、こういう応答になることがある:
+
+        {"error": "RefreshAccessTokenError",
+         "user": {...}, "expires": "2026-11-17T...",
+         "accessToken": <6日前に失効した JWT>}
+
+    error を見ずに accessToken を使うと backend-api が 401 (token_expired)
+    を返し、画面には「要再ログイン」とだけ出る。**しかし Cookie は切れて
+    いないので、同じブラウザから貼り直しても必ず同じ結果になる。**
+    ブラウザで入り直してもらう以外に道が無いことを、その場で言う必要がある。
+    """
+
+    make_jwt = staticmethod(TestChatGPTPastedAccessToken.make_jwt)
+
+    def session(self, **overrides):
+        payload = {
+            "WARNING_BANNER": "DO NOT SHARE",
+            "user": {"id": "user-1"},
+            "expires": "2026-11-17T01:34:39.690Z",
+            "accessToken": self.make_jwt(exp=time.time() + 3600),
+        }
+        payload.update(overrides)
+        return payload
+
+    def fetch(self, session_payload):
+        provider = ChatGPTProvider()
+        self.urls = []
+
+        def fake_get_json(url, headers, what, params=None):
+            self.urls.append(url)
+            if url.endswith("/api/auth/session"):
+                return session_payload
+            return dict(TestChatGPTUsageParsing.USAGE_RESPONSE)
+
+        provider.http.get_json = fake_get_json
+        return provider.fetch_usage("__Secure-next-auth.session-token=whatever")
+
+    def test_a_refresh_failure_is_named_rather_than_blamed_on_the_cookie(self):
+        with self.assertRaises(UsageError) as ctx:
+            self.fetch(self.session(error="RefreshAccessTokenError"))
+        self.assertTrue(ctx.exception.auth_error)
+        self.assertIn("RefreshAccessTokenError", str(ctx.exception))
+
+    def test_a_refresh_failure_stops_before_spending_a_request_on_a_dead_token(self):
+        """送っても 401 が返るだけと分かっているものを送らない。"""
+        with self.assertRaises(UsageError):
+            self.fetch(self.session(error="RefreshAccessTokenError"))
+        self.assertEqual(self.urls, ["https://chatgpt.com/api/auth/session"])
+
+    def test_an_expired_exchanged_token_is_caught_before_the_usage_call(self):
+        """交換で受け取った側の期限も見る (以前は貼り付けた JWT しか見ていない)。"""
+        with self.assertRaises(UsageError) as ctx:
+            self.fetch(self.session(accessToken=self.make_jwt(exp=time.time() - 60)))
+        self.assertTrue(ctx.exception.auth_error)
+        self.assertEqual(self.urls, ["https://chatgpt.com/api/auth/session"])
+
+    def test_a_healthy_session_is_untouched(self):
+        """error が無いときは今までどおり通ること。"""
+        result = self.fetch(self.session())
+        self.assertAlmostEqual(result["metrics"][0]["utilization"], 41.0)
+        self.assertEqual(len(self.urls), 2)
+
+    def test_the_paste_is_refused_before_it_is_ever_saved(self):
+        """保存する Cookie は暗号化された JWE で、後から error を読み直せない。
+
+        貼り付けを絞る前のここが、この事実に気づける唯一の機会。
+        """
+        provider = ChatGPTProvider()
+        broken = json.dumps(self.session(error="RefreshAccessTokenError"))
+        warning = provider.validate_paste(broken)
+        self.assertIn("RefreshAccessTokenError", warning)
+        self.assertEqual(provider.validate_paste(json.dumps(self.session())), "")
+        self.assertEqual(provider.validate_paste(""), "")
+
+    def test_the_paste_check_survives_a_dirty_copy(self):
+        """先頭にゴミが付いていても見落とさないこと。"""
+        provider = ChatGPTProvider()
+        broken = json.dumps(self.session(error="RefreshAccessTokenError"), indent=2)
+        self.assertIn("RefreshAccessTokenError",
+                      provider.validate_paste("Pretty-print\n" + broken))
+
+    def test_other_providers_are_unaffected(self):
+        """既定は空。口を足しただけで他の取得先の挙動は変えない。"""
+        for provider in (ClaudeProvider(), GeminiProvider(), CodexProvider()):
+            self.assertEqual(provider.validate_paste('{"error": "whatever"}'), "")
+
+
+class TestChatGPTSessionIsKeptAlive(unittest.TestCase):
+    """取得のたびにセッションを延ばし、その結果を保存し直すこと。
+
+    NextAuth のセッションはローリングで、/api/auth/session を呼ぶたびに
+    新しい sessionToken が発行され、有効期限が 90日先へ押し出される
+    (実測 2026-08-19: Set-Cookie の有効期限は毎回 2160 時間先。
+     発行された sessionToken だけで使用状況を取得できることも確認済み)。
+
+    **保存し直さなければ、最初に貼った1個をずっと使うことになる。**
+    更新の鎖が切れた時点で応答が RefreshAccessTokenError になり、
+    貼り直しでは直らない状態に落ちる。2026-08 に実際に起きたのがこれ。
+
+    書き戻す先は vscode-extension/backend/cli.py で、fetch_usage の戻り値の
+    "credential" を見て保存する (gemini.rotate_cookies と同じ経路)。
+    """
+
+    make_jwt = staticmethod(TestChatGPTPastedAccessToken.make_jwt)
+    NAME = ChatGPTProvider.session_cookie_name
+
+    def setUp(self):
+        # 間引きの記録はモジュール全体で共有される。試験ごとに消す。
+        chatgpt_module._last_renewal.clear()
+        self.fresh = "eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..new.cipher.tag"
+
+    def session(self, **overrides):
+        payload = {
+            "user": {"id": "user-1"},
+            "expires": "2026-11-17T01:56:33.415Z",
+            "accessToken": self.make_jwt(exp=time.time() + 3600),
+            "sessionToken": self.fresh,
+        }
+        payload.update(overrides)
+        return payload
+
+    def fetch(self, credential, session_payload=None):
+        provider = ChatGPTProvider()
+        payload = self.session() if session_payload is None else session_payload
+
+        def fake_get_json(url, headers, what, params=None):
+            if url.endswith("/api/auth/session"):
+                return payload
+            return dict(TestChatGPTUsageParsing.USAGE_RESPONSE)
+
+        provider.http.get_json = fake_get_json
+        return provider.fetch_usage(credential)
+
+    def test_the_freshly_issued_session_is_handed_back_to_be_saved(self):
+        result = self.fetch("%s=old-value" % self.NAME)
+        self.assertEqual(result["credential"], "%s=%s" % (self.NAME, self.fresh))
+
+    def test_the_renewal_only_happens_after_a_successful_fetch(self):
+        """使用状況が取れなかった取得で資格情報を差し替えないこと。"""
+        provider = ChatGPTProvider()
+
+        def fake_get_json(url, headers, what, params=None):
+            if url.endswith("/api/auth/session"):
+                return self.session()
+            raise UsageError("usage failed")
+
+        provider.http.get_json = fake_get_json
+        with self.assertRaises(UsageError):
+            provider.fetch_usage("%s=old-value" % self.NAME)
+
+    def test_a_second_fetch_soon_after_does_not_rewrite_the_settings(self):
+        """値は毎回変わる (JWE は呼ぶたびに暗号化し直される)。
+
+        素直に書き戻すと取得のたびに設定ファイルへ書くことになるので間引く。
+        """
+        first = self.fetch("%s=old-value" % self.NAME)
+        self.assertIn("credential", first)
+        second = self.fetch(first["credential"])
+        self.assertNotIn("credential", second)
+
+    def test_the_throttle_survives_the_credential_changing(self):
+        """**鍵に保存値を使うと間引きが効かない。**
+
+        保存し直すと値が変わるため、値を鍵にすると毎回「初回」になる。
+        アカウント側の変わらない印 (user.id) を鍵にしていることを固定する。
+        """
+        self.fetch("%s=old-value" % self.NAME)
+        self.fresh = "eyJhbGciOiJkaXIi..another.cipher.tag"
+        again = self.fetch("%s=something-else-entirely" % self.NAME)
+        self.assertNotIn("credential", again)
+
+    def test_two_accounts_are_throttled_separately(self):
+        self.fetch("%s=account-a" % self.NAME)
+        other = self.fetch("%s=account-b" % self.NAME,
+                           self.session(user={"id": "user-2"}))
+        self.assertIn("credential", other)
+
+    def test_an_unchanged_value_is_not_handed_back(self):
+        """同じものを書き戻させない (無駄な保存を1回でも減らす)。"""
+        result = self.fetch("%s=%s" % (self.NAME, self.fresh))
+        self.assertNotIn("credential", result)
+
+    def test_a_session_without_a_session_token_still_reports_usage(self):
+        """延命できなくても取得は成功している。例外にしないこと。"""
+        payload = self.session()
+        del payload["sessionToken"]
+        result = self.fetch("%s=old-value" % self.NAME, payload)
+        self.assertNotIn("credential", result)
+        self.assertAlmostEqual(result["metrics"][0]["utilization"], 41.0)
+
+    def test_a_pasted_access_token_has_nothing_to_renew(self):
+        """生の JWT を貼った経路は Cookie を持たないので延ばせない。"""
+        result = self.fetch(self.make_jwt(exp=time.time() + 3600))
+        self.assertNotIn("credential", result)
+
+    def test_the_key_matches_what_the_settings_writer_looks_for(self):
+        """cli.py は data.pop("credential") で受け取る。名前を揃えておく。"""
+        cli = os.path.join(EXTENSION_DIR, "backend", "cli.py")
+        with open(cli, encoding="utf-8") as f:
+            source = f.read()
+        self.assertIn('data.pop("credential"', source)
 
 
 class TestGeminiUsageParsing(unittest.TestCase):
