@@ -10,7 +10,10 @@ cli.py から別プロセスとして起動されます。
     python gui_helper.py add        --result <path>
     python gui_helper.py edit       --result <path> --id <account_id>
     python gui_helper.py relogin    --result <path> --id <account_id>
-    python gui_helper.py delete     --result <path> --id <account_id>
+
+**ここに来るのは、ログイン画面が要る操作だけです。** 削除はバックエンド
+(cli.py) の中で完結します。窓の要らない操作をここへ回すと、PySide6 が
+入っていない環境でそれまでできなくなります (実際にそうなっていました)。
 
 **結果は --result で渡されたファイルへ書きます。標準出力は使いません。**
 QtWebEngine (Chromium) は Python の sys.stdout を経由せず OS のファイル
@@ -125,8 +128,7 @@ def log_step(message: str):
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "mode",
-        choices=["add", "edit", "relogin", "delete", "silent_refresh"])
+        "mode", choices=["add", "edit", "relogin", "silent_refresh"])
     parser.add_argument("--result", required=True, help="結果を書き出す JSON のパス")
     parser.add_argument("--id", default="", help="対象アカウントの ID")
     return parser.parse_args()
@@ -410,28 +412,6 @@ def do_relogin(args, manager: ConfigManager, accounts: list) -> dict:
     return {"ok": True, "accountId": account.id, "changed": True}
 
 
-def do_delete(args, manager: ConfigManager, accounts: list) -> dict:
-    """アカウントを消します。
-
-    確認は呼び出し側 (VSCode) が済ませています。ここでもう一度聞くと、
-    別ウィンドウが出るだけで利用者には二度手間にしかなりません。
-    """
-    index = next((i for i, a in enumerate(accounts) if a.id == args.id), -1)
-    if index < 0:
-        return {"ok": False, "error": t("The account was not found.")}
-
-    account = accounts.pop(index)
-    if not manager.save(accounts, manager.settings):
-        return {"ok": False,
-                "error": t("The settings could not be saved. Check the log.")}
-
-    # 保存されたログイン状態 (Cookie を含む) も一緒に破棄する。
-    # 消し残すと、同じ ID を持つアカウントを作り直したときに
-    # 前の持ち主のセッションが復活する。
-    browser_profile.forget_profile(account.id)
-    return {"ok": True, "accountId": account.id, "changed": True}
-
-
 def do_silent_refresh(args, manager: ConfigManager, accounts: list) -> dict:
     """ログイン画面を出さずに Cookie を取り直せないか、1回だけ試します。
 
@@ -489,7 +469,7 @@ def do_silent_refresh(args, manager: ConfigManager, accounts: list) -> dict:
 
 
 HANDLERS = {"add": do_add, "edit": do_edit, "relogin": do_relogin,
-            "delete": do_delete, "silent_refresh": do_silent_refresh}
+            "silent_refresh": do_silent_refresh}
 
 
 def main():

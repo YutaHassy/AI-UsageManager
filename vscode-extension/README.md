@@ -50,8 +50,8 @@ Additionally **PySide6**:
 pip install PySide6 PySide6-Addons
 ```
 
-These two are only used when a sign-in window is opened. Viewing and refreshing
-never touch them.
+These two are only used when a sign-in window is opened. Viewing, refreshing
+and **deleting an account** never touch them.
 
 If you would rather not put PySide6 into the same environment as `requests`,
 point `aiUsageManager.guiPythonPath` at a second interpreter that has it.
@@ -254,8 +254,9 @@ pip install requests urllib3
 pip install PySide6 PySide6-Addons
 ```
 
-この2つはログイン画面を開いたときにだけ使われます。`requests` の環境と分けたい
-場合は、`aiUsageManager.guiPythonPath` に PySide6 入りの Python を指定してください。
+この2つはログイン画面を開いたときにだけ使われます。表示・更新と**アカウントの
+削除**では使いません。`requests` の環境と分けたい場合は、
+`aiUsageManager.guiPythonPath` に PySide6 入りの Python を指定してください。
 
 ### ログイン画面について
 

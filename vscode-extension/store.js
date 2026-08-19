@@ -10,7 +10,7 @@
 
 const vscode = require('vscode');
 
-const { GUI_OPERATIONS, t } = require('./i18n');
+const { ACCOUNT_OPERATIONS, t } = require('./i18n');
 
 /**
  * 取得の進み方。
@@ -167,8 +167,8 @@ class UsageStore {
      * 顔ぶれが変わった可能性があるとき、消えたアカウントの結果を cache から捨てます。
      *
      * 残すと `entry()` や `worst()` が存在しないアカウントの古い結果を持ち出し、
-     * 件数や表示が合わなくなります。reload() と runGuiOperation() の2箇所で
-     * 同じ後始末が必要なので、ここへ切り出しました。
+     * 件数や表示が合わなくなります。reload() と runGuiOperation()、
+     * deleteAccount() で同じ後始末が必要なので、ここへ切り出しました。
      */
     pruneMissingAccounts() {
         const alive = new Set(this.accounts.map((a) => a.id));
@@ -241,22 +241,22 @@ class UsageStore {
 
     // **guiBusyMessage には訳したものを入れます。** これは webview の案内文へ
     // そのまま差し込まれる値で、向こう側は訳す手立てを持ちません。
-    // 原文 (キー) は i18n.GUI_OPERATIONS に1つだけ置いてあります。
+    // 原文 (キー) は i18n.ACCOUNT_OPERATIONS に1つだけ置いてあります。
 
     addAccount() {
         return this.runGuiOperation(
-            t(GUI_OPERATIONS.add), () => this.backend.addAccount());
+            t(ACCOUNT_OPERATIONS.add), () => this.backend.addAccount());
     }
 
     /** @param {string} accountId */
     editAccount(accountId) {
         return this.runGuiOperation(
-            t(GUI_OPERATIONS.edit), () => this.backend.editAccount(accountId));
+            t(ACCOUNT_OPERATIONS.edit), () => this.backend.editAccount(accountId));
     }
 
     /** @param {string} accountId */
     relogin(accountId) {
-        return this.runGuiOperation(t(GUI_OPERATIONS.relogin), async () => {
+        return this.runGuiOperation(t(ACCOUNT_OPERATIONS.relogin), async () => {
             const snapshot = await this.backend.relogin(accountId);
             // ログインし直した直後は、前回の失敗が残っていると赤いままになる
             this.cache.delete(accountId);
@@ -264,10 +264,25 @@ class UsageStore {
         });
     }
 
-    /** @param {string} accountId */
-    deleteAccount(accountId) {
-        return this.runGuiOperation(
-            t(GUI_OPERATIONS.remove), () => this.backend.deleteAccount(accountId));
+    /**
+     * アカウントを1件消します。
+     *
+     * **runGuiOperation は通しません。** 削除に別ウィンドウは要らないので、
+     * バックエンドの中だけで終わります (backend/cli.py の do_delete_account)。
+     * ここを GUI 側の道に通していたために、PySide6 が入っていない環境では
+     * 削除まで「PySide6 を入れてください」で止まっていました。
+     *
+     * ログイン画面を開いている最中の削除は、バックエンドが断ります。
+     * あちらは開いた時点の一覧を閉じるときに書き戻すので、その間に消しても
+     * あとから上書きされて戻ってくるためです。
+     *
+     * @param {string} accountId
+     * @returns {Promise<void>}
+     */
+    async deleteAccount(accountId) {
+        this._snapshot = await this.backend.deleteAccount(accountId);
+        this.pruneMissingAccounts();
+        this._onDidChange.fire();
     }
 
     /**

@@ -18,11 +18,19 @@
 ログイン画面で行います。QtWebEngine はこのプロセスでは動かせないため
 (下記)、gui_helper.py を別プロセスとして起動して任せます。
 
+**削除はここで完結させます。** 消すのに窓は要らないのに、これも
+gui_helper.py へ回していたため、PySide6 が入っていない環境では削除まで
+「PySide6 を入れてください」で止まっていました。窓が要る操作と要らない
+操作を、同じ理由で同じ道に通さないでください。
+
 **このプロセスで QtWebEngine のオブジェクトを作らないでください。** ここには
 QApplication がありません。QWebEngineProfile などはその場でプロセスごと
 落ちることがあり、拡張からは「バックエンドが無言で死んだ」としか見えません。
 具体的には services.browser_profile を import しないこと (import しただけで
 QtWebEngineCore を引き込みます)。プロファイルが要る操作は gui_helper.py の担当です。
+**ただし、保存場所を知ることと消すことに Qt は要りません。** そのぶんは
+services.profile_storage に分けてあり (Qt を import しません)、削除で
+ログイン状態を捨てるときはこちらを使います。
 
 なお PySide6 が一切登場しないわけではありません。proxy_manager は
 QtNetwork を import します (ImportError は握って素通りします) が、
@@ -220,7 +228,9 @@ if _problem:
 
 
 from models.account import Account                      # noqa: E402
-from services import providers, proxy_manager, usage_status  # noqa: E402
+from services import (                                  # noqa: E402
+    profile_storage, providers, proxy_manager, usage_status,
+)
 from services.providers import aoai_cost  # noqa: E402
 from services.config_manager import (                   # noqa: E402
     ConfigLoadError, ConfigManager, default_config_dir,
@@ -294,6 +304,45 @@ class Backend:
 
     def find(self, account_id: str):
         return next((a for a in self.accounts if a.id == account_id), None)
+
+    def delete_account(self, account_id: str) -> dict:
+        """アカウントを1件消します。
+
+        **gui_helper.py は使いません。** 削除にログイン画面は要らないので、
+        PySide6 が入っていない環境でも消せるようにここで完結させます
+        (このファイル冒頭の説明を参照)。
+
+        戻り値は {"ok": True, "accountId": ...} か
+        {"ok": False, "error": ...} です。**例外は投げません。**
+        呼び出し側は要求への応答を必ず1つ返す必要があるためです。
+        """
+        account = self.find(account_id)
+        if account is None:
+            return {"ok": False, "error": t("The account was not found.")}
+
+        kept = self.accounts
+        self.accounts = [a for a in kept if a.id != account.id]
+        if not self.save():
+            # **保存できなかったものを、消えたことにしません。** 手元だけ
+            # 消すと、画面からは消えたのに config.json には残り、次に
+            # 読み直したときに戻ってきます。
+            self.accounts = kept
+            return {"ok": False, "error": t(
+                "The settings could not be saved. See the log for details.")}
+
+        logger.info("アカウントを削除しました: %s", account.name)
+
+        # 保存されたログイン状態 (Cookie を含む) も一緒に捨てる。**消し残す
+        # と、消したはずのセッションがディスクに残ります。** 利用者が消す
+        # と言ったのはまさにこれなので、応答を返す前にここで済ませます。
+        #
+        # 中身はブラウザのキャッシュを含むので、消し終わるまで数秒かかる
+        # ことがあります。その間この読み取りループは止まります (取得は
+        # 別スレッドなので、遅れるのは次の要求を受け取る時刻だけです)。
+        # **別スレッドへ逃がさないこと。** 逃がすと、削除の直後に VSCode を
+        # 閉じた場合にプロセスごと消えて、後始末が黙って行われません。
+        profile_storage.remove_profile(account.id)
+        return {"ok": True, "accountId": account.id}
 
     # ---------------- 直列化 ----------------
 
@@ -533,6 +582,16 @@ class Backend:
             self._gui_cancelled = False
         self._gui_lock.release()
 
+    def gui_in_progress(self) -> bool:
+        """ログイン画面の操作が1つ走っているか。
+
+        **削除の可否を決めるのに使います。** ログイン画面は開いた時点の
+        アカウント一覧を丸ごと抱えていて、閉じるときにそれを書き戻します。
+        その最中にこちらが1件消しても、あとから上書きされて戻ってきます。
+        """
+        with self._gui_state_lock:
+            return self._gui_running
+
     def run_gui_helper(self, mode: str, account_id: str = "") -> dict:
         """gui_helper.py を別プロセスで起動し、終わるまで待ちます。
 
@@ -585,8 +644,9 @@ class Backend:
                     #
                     #   1. 実測では、これを引き継がせると子が Qt の初期化まで
                     #      到達せずに止まります (ワーキングセット 9.5MB、CPU
-                    #      0.03 秒、ウィンドウなし)。窓を出さない delete でも
-                    #      再現し、DEVNULL にすると再現しなくなります。
+                    #      0.03 秒、ウィンドウなし)。当時ここを通っていた、窓を
+                    #      出さない削除でも再現し、DEVNULL にすると再現しなく
+                    #      なります。
                     #   2. 仮に止まらなくても、要求の JSON が流れているパイプを
                     #      2 つのプロセスが読める状態にしてはいけません。1 バイト
                     #      でも子に渡ると、こちらはフレームを失います。
@@ -1000,7 +1060,30 @@ class Dispatcher:
         self._start_gui(request_id, "relogin", params.get("accountId") or "")
 
     def do_delete_account(self, request_id, params):
-        self._start_gui(request_id, "delete", params.get("accountId") or "")
+        """アカウントを1件消します。
+
+        **ここだけは _start_gui を通しません。** 追加・編集・再ログインは
+        ログイン画面が要るので PySide6 も要りますが、削除に窓は要りません。
+        以前はこれも同じ道を通していたため、PySide6 が入っていない環境では
+        「PySide6 を入れてください」と言われ、拡張の中だけではアカウントを
+        消せませんでした。
+
+        **ログイン画面が開いている間は断ります** (gui_in_progress の説明)。
+        """
+        if self.backend.gui_in_progress():
+            reply_error(request_id, t(
+                "Another sign-in operation is in progress. "
+                "Finish that one first."))
+            return
+
+        result = self.backend.delete_account(params.get("accountId") or "")
+        if not result.get("ok"):
+            reply_error(request_id, result["error"])
+            return
+
+        snapshot = self.backend.snapshot()
+        snapshot["accountId"] = result["accountId"]
+        reply(request_id, snapshot)
 
     def do_cancel_gui(self, request_id, params):
         """進行中のログイン画面を終了させます。
