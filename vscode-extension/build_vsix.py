@@ -47,7 +47,8 @@ _DIST = os.path.join(_ROOT, "dist")
 # プロジェクト直下からコピーするもの。ディレクトリはまるごと、
 # ui/ は拡張が使う account_dialog.py だけ (デスクトップ版の画面は要らない)。
 _COPY_DIRS = ["services", "models", "icons"]
-_COPY_FILES = [os.path.join("ui", "account_dialog.py")]
+_COPY_FILES = [os.path.join("ui", "account_dialog.py"),
+               os.path.join("ui", "session_refresher.py")]
 
 # backend/ に残す原本。コピーで消してはいけないもの。
 _KEEP = {"cli.py", "gui_helper.py"}

@@ -854,6 +854,68 @@ class Backend {
     setEnabled(accountId, enabled) {
         return this.call('set_enabled', { accountId, enabled });
     }
+
+    // ---------------- プロキシ設定 ----------------
+    //
+    // 拡張の設定 (aiUsageManager.proxy.*) が真であり、ここから送るものは
+    // バックエンドの config.json をそれで上書きするだけです。パスワードだけは
+    // 別扱い (setProxyPassword) にしてあります。settings.json に書くと平文で
+    // 保存・同期されるため、拡張側では一切保持しません。
+
+    /**
+     * いまの設定を読みます。
+     *
+     * **パスワードそのものは返ってきません。** hasPassword の真偽だけです
+     * (cli.py の get_proxy 参照)。
+     *
+     * @returns {Promise<{mode: string, host: string, port: number,
+     *   username: string, hasPassword: boolean}>}
+     */
+    getProxy() {
+        return this.call('get_proxy');
+    }
+
+    /**
+     * プロキシ設定 (パスワードを除く) を保存します。
+     *
+     * @param {{mode: string, host: string, port: number, username: string}} settings
+     * @returns {Promise<{saved: boolean}>}
+     */
+    setProxy(settings) {
+        return this.call('set_proxy', settings);
+    }
+
+    /**
+     * プロキシのパスワードだけを保存します。
+     *
+     * @param {string} password 空文字を渡すと保存済みのパスワードを消します。
+     * @returns {Promise<{saved: boolean}>}
+     */
+    setProxyPassword(password) {
+        return this.call('set_proxy_password', { password });
+    }
+
+    /**
+     * いまの設定でプロキシへの接続を試します。
+     *
+     * message は表示用に翻訳済みの文字列が返ります (cli.py 側で
+     * services/i18n.py を通して組み立てています)。ここでは訳しません。
+     *
+     * @returns {Promise<{reachable: boolean, message: string}>}
+     */
+    testProxy() {
+        return this.call('test_proxy');
+    }
+
+    /**
+     * 環境変数 (HTTP_PROXY / HTTPS_PROXY) からプロキシを検出します。
+     * **保存はしません。** 呼び出し側が使うかどうかを決めます。
+     *
+     * @returns {Promise<{found: boolean, host: string, port: number}>}
+     */
+    detectProxy() {
+        return this.call('detect_proxy');
+    }
 }
 
 module.exports = { Backend, BackendError };

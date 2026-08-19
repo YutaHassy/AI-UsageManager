@@ -13,6 +13,9 @@
   "command.showLog.title": "Show Log",
   "command.restartBackend.title": "Restart Backend",
   "command.selectLanguage.title": "Language",
+  "command.setProxyPassword.title": "Set Proxy Password",
+  "command.testProxy.title": "Test Proxy Connection",
+  "command.importProxyFromEnvironment.title": "Import Proxy From Environment Variables",
   "configuration.pythonPath.description": "The Python executable that runs the backend. Leave empty to find one automatically (the interpreter the Python extension has selected → the workspace `.venv` / `venv` → `py -3` / `python3` / `python` on PATH, in that order). Point this at an environment that has `requests` installed.",
   "configuration.guiPythonPath.description": "The Python that runs adding, editing and signing in again (the sign-in browser window). Only that operation needs `PySide6` and `PySide6-Addons`. Leave empty to use the same one as `#aiUsageManager.pythonPath#`. Nothing to set here if you only view and refresh usage.",
   "configuration.language.description": "The language used by the extension's views and backend messages. Command names in the Command Palette and the description text of this setting itself always follow VS Code's own display language, so changing this setting does not change those.",
@@ -29,5 +32,12 @@
   "configuration.autoRefreshMinutes.enum.30": "Every 30 minutes",
   "configuration.autoRefreshMinutes.enum.60": "Every 60 minutes",
   "configuration.refreshOnOpen.description": "Refresh everything once when the view is opened.",
-  "configuration.showStatusBar.description": "Show the account closest to its limit in the status bar."
+  "configuration.showStatusBar.description": "Show the account closest to its limit in the status bar.",
+  "configuration.proxy.mode.description": "How the backend connects to the network. \"system\" (default) follows the Windows proxy setting and the HTTP_PROXY / HTTPS_PROXY environment variables. \"manual\" uses the host and port below. \"none\" always connects directly.",
+  "configuration.proxy.mode.enum.system": "Follow the system proxy settings (recommended)",
+  "configuration.proxy.mode.enum.manual": "Use a manually specified proxy",
+  "configuration.proxy.mode.enum.none": "Do not use a proxy (connect directly)",
+  "configuration.proxy.host.description": "The proxy server's host name. Used only when \"aiUsageManager.proxy.mode\" is \"manual\".",
+  "configuration.proxy.port.description": "The proxy server's port. Used only when \"aiUsageManager.proxy.mode\" is \"manual\".",
+  "configuration.proxy.username.description": "The user name for proxy authentication. The password is not set here — run \"AI-UsageManager: Set Proxy Password\" from the Command Palette instead. It is stored encrypted, separately from this settings file."
 }

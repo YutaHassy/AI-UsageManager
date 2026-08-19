@@ -1,0 +1,16 @@
+# このリポジトリは exe を作らない (旧版の requirements-build.txt / PyInstaller に
+# 相当するものはここに含めない)。
+
+# QtWebEngineWidgets (アカウントの追加・編集・再ログイン時に出す GUI ダイアログ) は
+# PySide6-Addons が提供する。vscode-extension/backend/gui_helper.py と
+# ui/account_dialog.py が実行時に import するため、実行時の依存として必要。
+# PySide6 のメタパッケージが Essentials/Addons を両方入れるが、依存を明示しておく。
+PySide6>=6.5,<7
+PySide6-Addons>=6.5,<7
+
+requests>=2.32,<3
+# services/providers/base.py で InsecureRequestWarning の抑止に直接 import しているため明示する
+urllib3>=2.0,<3
+
+# tests/ を pytest で実行するために必要 (拡張の実行そのものには不要)。
+pytest>=7

@@ -89,6 +89,10 @@ function activate(context) {
         vscode.commands.registerCommand('aiUsageManager.openSettings', () =>
             vscode.commands.executeCommand('workbench.action.openSettings', 'aiUsageManager')),
         vscode.commands.registerCommand('aiUsageManager.selectLanguage', () => selectLanguage()),
+        vscode.commands.registerCommand('aiUsageManager.setProxyPassword', () => setProxyPassword()),
+        vscode.commands.registerCommand('aiUsageManager.testProxy', () => testProxy()),
+        vscode.commands.registerCommand('aiUsageManager.importProxyFromEnvironment',
+            () => importProxyFromEnvironment()),
         vscode.commands.registerCommand('aiUsageManager.showLog', () => log.show(true)),
         vscode.commands.registerCommand('aiUsageManager.restartBackend', async () => {
             backend.restart();
@@ -135,12 +139,25 @@ function activate(context) {
             if (e.affectsConfiguration('aiUsageManager.showStatusBar')) {
                 updateStatusBar();
             }
+            if (e.affectsConfiguration('aiUsageManager.proxy')) {
+                // パスワードはここに含まれない (aiUsageManager.proxy.* に
+                // パスワードの設定キーは無い。setProxyPassword コマンド経由の
+                // RPC でだけ渡す)。バックエンドの再起動は要らない — 通信の
+                // たびに proxy_manager.py が現在値を見るだけなので、
+                // set_proxy を送るだけで次の通信から効く。
+                void pushProxySettings();
+            }
         }),
     );
 
     // 起動直後は静かにしておく。ステータスバーに出す情報が要るので
     // 一覧だけは読みますが、取得 (通信) は利用者が開くまで行いません。
-    void reload().then(() => scheduleAutoRefresh());
+    void reload().then(() => {
+        scheduleAutoRefresh();
+        // 拡張の設定が真であり、バックエンドの config.json はそれを写した
+        // ものになる。起動のたびに1回、現在値で必ず上書きする。
+        void pushProxySettings();
+    });
 }
 
 function deactivate() {
@@ -686,6 +703,184 @@ async function deleteAccount(accountId) {
     }
     vscode.window.setStatusBarMessage(
         t("Deleted '{name}'", { name: account.name }), 5000);
+}
+
+// ================= プロキシの設定 =================
+//
+// バックエンドの services/config_manager.py には proxy_mode / proxy_host /
+// proxy_port / proxy_username / proxy_password が今も生きており、
+// services/proxy_manager.py が実際にそれを使って通信する。ところが VSCode
+// 拡張側には設定する手段が無く、ui/account_dialog.py の案内が「設定で
+// ユーザー名とパスワードを入力してください」と言うだけで案内先が存在しない
+// 状態だった。ここでその案内先を作る。
+//
+// **パスワードだけは設定キーにしない。** settings.json は平文で保存され、
+// Settings Sync で他端末にも複製される。バックエンドは secret_store.py の
+// DPAPI で暗号化して保存する設計なので (config_manager.py の
+// SECRET_SETTINGS)、その設計を拡張側から壊さないよう、パスワードは
+// setProxyPassword コマンド経由の RPC でだけ渡す (get_proxy もパスワード
+// そのものは返さない — hasPassword の真偽だけ)。
+
+/**
+ * VSCode 設定のプロキシ項目 (パスワードを除く) をバックエンドへ反映します。
+ *
+ * **拡張の設定が真で、バックエンドの config.json はそれを写したものです。**
+ * 呼ぶのは (1) 拡張の起動時に1回、(2) aiUsageManager.proxy 配下の設定が
+ * 変わったとき、の2箇所だけです (activate() 参照)。
+ *
+ * **失敗しても利用者には出しません。** 起動のたびに必ず1回叩くので、
+ * Python を入れていない環境や pythonPath が未設定の環境では毎回失敗します。
+ * それを毎回ダイアログで見せると、この拡張を使うたびの邪魔になります。
+ *
+ * @returns {Promise<void>}
+ */
+async function pushProxySettings() {
+    const config = vscode.workspace.getConfiguration('aiUsageManager.proxy');
+    try {
+        await backend.setProxy({
+            mode: config.get('mode', 'system'),
+            host: config.get('host', ''),
+            port: config.get('port', 8080),
+            username: config.get('username', ''),
+        });
+        trace('プロキシ設定をバックエンドへ反映しました');
+    } catch (e) {
+        const message = /** @type {Error} */ (e).message;
+        log.appendLine(`[extension] プロキシ設定を反映できませんでした: ${message}`);
+    }
+}
+
+/**
+ * プロキシのパスワードを聞いて、バックエンドへ送ります。
+ *
+ * **空文字で確定するとパスワードを消します。** キャンセル (Esc) と空文字の
+ * 確定を区別する必要があるため、showInputBox の戻り値が undefined
+ * (キャンセル) かどうかで先に分岐します。
+ *
+ * @returns {Promise<void>}
+ */
+async function setProxyPassword() {
+    const password = await vscode.window.showInputBox({
+        title: t('Set the proxy password'),
+        password: true,
+        ignoreFocusOut: true,
+        prompt: t('Leave it empty and press Enter to clear the saved password.'),
+        placeHolder: t('Proxy password'),
+    });
+    if (password === undefined) {
+        // Esc で閉じた。空文字を確定した場合と違い、何もしない。
+        return;
+    }
+
+    try {
+        await backend.setProxyPassword(password);
+        vscode.window.setStatusBarMessage(
+            password
+                ? t('AI-UsageManager: the proxy password has been saved')
+                : t('AI-UsageManager: the proxy password has been cleared'),
+            4000);
+    } catch (e) {
+        const message = /** @type {Error} */ (e).message;
+        log.appendLine(`[extension] プロキシパスワードを保存できませんでした: ${message}`);
+        const showLog = t('Show Log');
+        const choice = await vscode.window.showErrorMessage(
+            t('Could not save the proxy password.\n{reason}', { reason: message }),
+            showLog);
+        if (choice === showLog) {
+            log.show(true);
+        }
+    }
+}
+
+/**
+ * いまの設定でプロキシへの接続を試します (旧版 settings_dialog.py の
+ * ConnectionTestWorker に相当)。
+ *
+ * **result.message は t() を通しません。** バックエンドがすでに表示用に
+ * 翻訳して返します (cli.py の test_proxy が services/i18n.py 経由で
+ * 組み立てる)。ここで訳し直すと二重変換になり、英語の原文キーとして
+ * 一致しないぶん、かえって英語のまま出てしまいます。
+ *
+ * @returns {Promise<void>}
+ */
+async function testProxy() {
+    await vscode.window.withProgress(
+        {
+            location: vscode.ProgressLocation.Notification,
+            title: t('Testing the proxy connection'),
+        },
+        async () => {
+            let result;
+            try {
+                result = await backend.testProxy();
+            } catch (e) {
+                const message = /** @type {Error} */ (e).message;
+                log.appendLine(`[extension] 接続テストに失敗しました: ${message}`);
+                void vscode.window.showErrorMessage(
+                    t('Could not test the proxy connection.\n{reason}', { reason: message }));
+                return;
+            }
+
+            if (result.reachable) {
+                void vscode.window.showInformationMessage(result.message);
+                return;
+            }
+            const showLog = t('Show Log');
+            const choice = await vscode.window.showWarningMessage(result.message, showLog);
+            if (choice === showLog) {
+                log.show(true);
+            }
+        },
+    );
+}
+
+/**
+ * 環境変数 (HTTP_PROXY / HTTPS_PROXY) からプロキシを検出し、設定へ書きます
+ * (旧版 settings_dialog.py の「環境変数から取り込む」ボタンに相当)。
+ *
+ * **書くのはホストとポートだけです。** detect_proxy はユーザーID・パスワード
+ * を返しません (RPC の戻り値に含まれない)。環境変数に入っている認証情報は
+ * たいてい社内 AD のものなので、それを settings.json (平文・同期対象) へ
+ * 複製しないための設計です。ユーザーIDは aiUsageManager.proxy.username に
+ * 手で、パスワードは setProxyPassword コマンドで、それぞれ利用者自身に
+ * 入れてもらいます。
+ *
+ * **mode は変えません。** ここで manual へ勝手に切り替えると、system モード
+ * を意図的に選んでいた利用者の挙動まで変えてしまいます。値を埋めるだけに
+ * 留め、使うかどうかは利用者が aiUsageManager.proxy.mode を自分で manual に
+ * します。
+ *
+ * @returns {Promise<void>}
+ */
+async function importProxyFromEnvironment() {
+    let detected;
+    try {
+        detected = await backend.detectProxy();
+    } catch (e) {
+        const message = /** @type {Error} */ (e).message;
+        log.appendLine(`[extension] 環境変数からのプロキシ検出に失敗しました: ${message}`);
+        void vscode.window.showErrorMessage(
+            t('Could not detect a proxy from environment variables.\n{reason}',
+                { reason: message }));
+        return;
+    }
+
+    if (!detected.found) {
+        void vscode.window.showInformationMessage(
+            t('No proxy was detected from environment variables.'));
+        return;
+    }
+
+    const config = vscode.workspace.getConfiguration('aiUsageManager');
+    await config.update('proxy.host', detected.host, vscode.ConfigurationTarget.Global);
+    await config.update('proxy.port', detected.port, vscode.ConfigurationTarget.Global);
+    // バックエンドへの反映そのものは onDidChangeConfiguration が拾う
+    // (pushProxySettings を呼ぶ)。ここでは重ねて呼びません。
+
+    void vscode.window.showInformationMessage(
+        t('Imported the proxy {host}:{port} from environment variables. '
+            + 'Set "aiUsageManager.proxy.mode" to "manual" to use it.',
+            { host: detected.host, port: detected.port }));
 }
 
 function scheduleAutoRefresh() {

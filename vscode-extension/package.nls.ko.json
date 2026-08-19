@@ -13,6 +13,9 @@
   "command.showLog.title": "로그 표시",
   "command.restartBackend.title": "백엔드 다시 시작",
   "command.selectLanguage.title": "언어",
+  "command.setProxyPassword.title": "프록시 비밀번호 설정",
+  "command.testProxy.title": "프록시 연결 테스트",
+  "command.importProxyFromEnvironment.title": "환경 변수에서 프록시 가져오기",
   "configuration.pythonPath.description": "백엔드를 실행할 Python 실행 파일입니다. 비워 두면 자동으로 찾습니다(Python 확장이 선택한 인터프리터 → 작업 영역의 `.venv` / `venv` → PATH 상의 `py -3` / `python3` / `python` 순). `requests` 가 설치된 환경을 지정하세요.",
   "configuration.guiPythonPath.description": "계정 추가·편집·다시 로그인(로그인용 브라우저 창)을 실행할 Python 입니다. 이 작업에만 `PySide6` 와 `PySide6-Addons` 가 필요합니다. 비워 두면 `#aiUsageManager.pythonPath#` 와 같은 것을 사용합니다. 사용량을 보고 새로 고치기만 한다면 설정할 필요가 없습니다.",
   "configuration.language.description": "확장의 화면과 백엔드 메시지에 사용할 언어입니다. 명령 팔레트의 명령 이름과 이 설정 항목의 설명문 자체는 항상 VS Code 자체의 표시 언어를 따르므로, 이 설정을 바꿔도 그것들은 바뀌지 않습니다.",
@@ -29,5 +32,12 @@
   "configuration.autoRefreshMinutes.enum.30": "30분마다",
   "configuration.autoRefreshMinutes.enum.60": "60분마다",
   "configuration.refreshOnOpen.description": "화면을 열 때 먼저 한 번 모두 새로 고칩니다.",
-  "configuration.showStatusBar.description": "한도에 가장 가까운 계정을 상태 표시줄에 표시합니다."
+  "configuration.showStatusBar.description": "한도에 가장 가까운 계정을 상태 표시줄에 표시합니다.",
+  "configuration.proxy.mode.description": "백엔드가 네트워크에 연결하는 방식입니다. \"system\"(기본값)은 Windows 프록시 설정과 환경 변수(HTTP_PROXY / HTTPS_PROXY)를 따릅니다. \"manual\"은 아래의 호스트와 포트를 사용합니다. \"none\"은 항상 직접 연결합니다.",
+  "configuration.proxy.mode.enum.system": "시스템 프록시 설정을 따름(권장)",
+  "configuration.proxy.mode.enum.manual": "수동으로 지정한 프록시 사용",
+  "configuration.proxy.mode.enum.none": "프록시를 사용하지 않음(직접 연결)",
+  "configuration.proxy.host.description": "프록시 서버의 호스트 이름입니다. \"aiUsageManager.proxy.mode\" 가 \"manual\" 일 때만 사용됩니다.",
+  "configuration.proxy.port.description": "프록시 서버의 포트입니다. \"aiUsageManager.proxy.mode\" 가 \"manual\" 일 때만 사용됩니다.",
+  "configuration.proxy.username.description": "프록시 인증에 사용할 사용자 ID입니다. 비밀번호는 여기서 설정할 수 없습니다 — 명령 팔레트에서 \"AI-UsageManager: 프록시 비밀번호 설정\" 을 실행하세요. 이 설정 파일과는 별도로 암호화되어 저장됩니다."
 }

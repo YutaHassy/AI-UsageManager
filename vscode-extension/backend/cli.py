@@ -97,14 +97,56 @@ _write_lock = threading.Lock()
 logger = logging.getLogger("backend")
 
 
+# app.log の書き出し。大きさと世代数はデスクトップ版 (旧 main.py) と同じです。
+LOG_FILENAME = "app.log"
+LOG_MAX_BYTES = 1_000_000
+LOG_BACKUP_COUNT = 3
+
+
+def _install_file_handler(root: logging.Logger) -> None:
+    """app.log への書き出しを足します。**失敗しても起動は止めません。**
+
+    ログを残せないことは、バックエンドが動かない理由にはならないためです。
+    """
+    from logging.handlers import RotatingFileHandler
+
+    path = os.path.join(default_config_dir(), LOG_FILENAME)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        handler = RotatingFileHandler(
+            path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT,
+            encoding="utf-8", delay=True,
+        )
+    except OSError as e:
+        root.warning("%s へ書き出せません (出力チャンネルにだけ残します): %s", path, e)
+        return
+    # 出力チャンネルと違い、あとから読み返すためのものなので時刻を入れます。
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    root.addHandler(handler)
+
+
 def setup_logging():
-    """ログはすべて stderr へ。拡張側は出力チャンネルに流します。"""
+    """ログは stderr と app.log の両方へ。
+
+    stderr は拡張側が出力チャンネルへ流します。**それだけでは足りません。**
+    出力チャンネルは VSCode を閉じると消えるので、閉じたあとに
+    「さっき失敗したときのログ」を読む手段がありませんでした。
+    gui_helper.py が想定外のエラーで出す案内 (「詳細は app.log を」) の
+    宛先でもあり、書き出しを止めていた間、あの案内は空振りしていました。
+
+    **app.log へ書くのはこのプロセスだけです。** gui_helper.py は別プロセス
+    ですが、あちらの stderr は run_gui_helper がこちらの logger へ流し込むので、
+    それでこのファイルに載ります。2つのプロセスから同じファイルを開くと、
+    Windows では世代交代 (rename) が相手に掴まれて失敗します。
+    """
     level_name = (os.environ.get("AI_USAGE_MANAGER_LOGLEVEL") or "INFO").upper()
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter("[%(levelname)s] %(name)s: %(message)s"))
     root = logging.getLogger()
     root.setLevel(getattr(logging, level_name, logging.INFO))
     root.addHandler(handler)
+    _install_file_handler(root)
 
 
 def send(payload: dict):
@@ -356,8 +398,32 @@ class Backend:
         try:
             data = provider.fetch_usage(credential, organization_id)
         except UsageError as e:
-            reply_error(request_id, str(e), bool(getattr(e, "auth_error", False)))
-            return
+            if not getattr(e, "auth_error", False):
+                reply_error(request_id, str(e), False)
+                return
+
+            # 失効していた。**いきなりログイン画面を出す前に、画面を出さない
+            # 復帰を1回だけ試します。** ブラウザプロファイルにログイン状態が
+            # 残っていることは多く、その場合は利用者が何もしなくても戻せます。
+            if not self.try_silent_refresh(account):
+                reply_error(request_id, str(e), True)
+                return
+
+            # ヘルパーが config.json を書き換えたので読み直しています。
+            # **掴み直さないと、古い方の Cookie を書き戻してしまいます。**
+            account = self.find(account_id)
+            if account is None:
+                reply_error(request_id, t(
+                    "The account was not found (the settings may have changed)."))
+                return
+            credential = account.cookie
+            organization_id = account.organization_id
+            try:
+                data = provider.fetch_usage(credential, organization_id)
+            except UsageError as e:
+                reply_error(request_id, str(e),
+                            bool(getattr(e, "auth_error", False)))
+                return
 
         # 取得中に判明した値を設定へ書き戻す。デスクトップ版の
         # on_fetch_success と同じ内容 (片方だけ更新されると、両方から
@@ -390,6 +456,46 @@ class Backend:
         data = usage_status.annotate(data)
 
         reply(request_id, {"accountId": account_id, "usage": data})
+
+    def try_silent_refresh(self, account) -> bool:
+        """失効した Cookie を、窓を出さずに取り直せないか1回だけ試します。
+
+        デスクトップ版の SessionRefresher の移植です。**ここでは Qt に触れ
+        ません** (このファイルの冒頭を参照)。窓を出さないだけで中身は
+        QtWebEngine なので、ほかのログイン操作と同じく gui_helper.py を
+        別プロセスで起動して任せます。
+
+        **ログイン画面が開いている間は試しません。** あちらは開いたときの
+        アカウント一覧を最後に丸ごと書き戻すので、その最中にこちらが
+        config.json を書くと、先に書いた方が消えます。錠 (begin_gui) を
+        取れなければ、今回は諦めて通常どおり失効として返します。
+
+        取れたかどうかだけを返します。新しい Cookie は gui_helper が
+        config.json へ書いているので、呼び出し元は読み直して拾います。
+        """
+        provider = account.get_provider()
+        if provider.auth_kind != AUTH_COOKIE or not provider.home_url:
+            return False
+        if not self.begin_gui():
+            logger.info("ログイン画面が開いているため、画面なしの復帰は見送ります。")
+            return False
+        try:
+            logger.info("'%s' の %s が失効しました。画面を出さずに取り直せないか試します。",
+                        account.name, provider.credential_label)
+            result = self.run_gui_helper("silent_refresh", account.id)
+        finally:
+            self.end_gui()
+
+        if not result.get("ok") or not result.get("changed"):
+            logger.info("画面なしでは戻せませんでした (account=%s, 状態=%s)。",
+                        account.id, result.get("status") or result.get("error"))
+            return False
+
+        logger.info("画面を出さずに '%s' の %s を取り直しました。",
+                    account.name, provider.credential_label)
+        # ヘルパーが書いた config.json を読み直す。
+        self.load()
+        return True
 
     # ---------------- ブラウザ画面が要る操作 ----------------
 
@@ -645,6 +751,76 @@ class Backend:
 # ---------------------------------------------------------------------------
 
 
+# 接続テストの宛先。**Cookie を送らずに叩ける先**であることが条件です。
+PROXY_TEST_URL = "https://claude.ai/api/organizations"
+
+
+def _test_proxy_connection() -> tuple:
+    """プロキシを通って外まで届くかを確かめ、(可否, 表示用の説明) を返します。
+
+    デスクトップ版の設定画面にあった接続テストの移植です。**Cookie は
+    送りません。** 送らなければ API は「認証されていない」と答えるので、
+    その答えが返ってくること自体が「プロキシを抜けて相手まで届いた」
+    証拠になります。認証情報を持ち出さずに経路だけを試せます。
+
+    落ちた理由をここで見分けるのは、利用者に打つ手を示すためです。
+    「つながりません」だけでは、プロキシの設定・資格情報・社内の CA 証明書の
+    どれを直せばよいのか分かりません。
+    """
+    import requests
+
+    from services.providers import resolve_verify
+    from services.providers.claude import ClaudeProvider
+
+    # 実際の取得と同じヘッダを使う (Cookie だけ外す)。ヘッダが違うと、
+    # 本番では弾かれるのにテストだけ通る、という食い違いが起きます。
+    headers = ClaudeProvider()._headers("")
+    headers.pop("Cookie", None)
+
+    try:
+        response = requests.get(
+            PROXY_TEST_URL, timeout=20,
+            proxies=proxy_manager.requests_proxies(PROXY_TEST_URL),
+            verify=resolve_verify(), headers=headers,
+        )
+    except requests.exceptions.ProxyError as e:
+        return False, t("The proxy could not be reached.\n\n{reason}", reason=e)
+    except requests.exceptions.SSLError as e:
+        return False, t(
+            "An SSL error occurred. If a corporate proxy inspects traffic, "
+            "point the REQUESTS_CA_BUNDLE environment variable at its CA "
+            "certificate.\n\n{reason}", reason=e)
+    except requests.RequestException as e:
+        return False, t("The connection failed.\n\n{reason}", reason=e)
+
+    if response.status_code == 407:
+        return False, t(
+            "Proxy authentication failed (407). Check the user name and "
+            "password.")
+
+    body = response.text or ""
+    if "Just a moment" in body or "cf-browser-verification" in body:
+        return False, t(
+            "The proxy was passed, but Cloudflare's browser check blocked the "
+            "request. The in-app sign-in window (a real browser) may still get "
+            "through.")
+
+    try:
+        response.json()
+    except ValueError:
+        return False, t(
+            "claude.ai answered HTTP {code}, but the reply could not be read. "
+            "A corporate proxy may be returning a block page instead.",
+            code=response.status_code)
+
+    if response.status_code in (401, 403):
+        return True, t(
+            "Connected (HTTP {code}). The request was refused because no "
+            "credentials were sent, which means the proxy was passed and "
+            "claude.ai was reached.", code=response.status_code)
+    return True, t("Connected (HTTP {code}).", code=response.status_code)
+
+
 class Dispatcher:
     def __init__(self, backend: Backend):
         self.backend = backend
@@ -689,6 +865,98 @@ class Dispatcher:
                 "The settings could not be saved. See the log for details."))
             return
         reply(request_id, self.backend.snapshot())
+
+    # ---- プロキシ ----
+    #
+    # **設定の主は拡張側 (VSCode の設定) です。** ここは受け取って
+    # config.json へ書き写し、proxy_manager へ反映するだけにしています。
+    # 同じ値が2箇所に別々に住むと、どちらが効いているのか誰にも分からなく
+    # なるためです。
+    #
+    # **パスワードだけは例外で、ここが主です。** VSCode の settings.json は
+    # 平文で、Settings Sync により他の端末へも複製され得ます。パスワードは
+    # secret_store (Windows では DPAPI) で暗号化してから保存します。
+
+    def _save_proxy(self, request_id) -> bool:
+        """書き換えた設定を保存し、走っている取得にも反映します。"""
+        if not self.backend.save():
+            reply_error(request_id, t(
+                "The settings could not be saved. See the log for details."))
+            return False
+        proxy_manager.configure(self.backend.config_manager.settings)
+        return True
+
+    def do_get_proxy(self, request_id, params):
+        settings = self.backend.config_manager.settings
+        reply(request_id, {
+            "mode": settings.get("proxy_mode", "system"),
+            "host": settings.get("proxy_host", ""),
+            "port": settings.get("proxy_port", 8080),
+            "username": settings.get("proxy_username", ""),
+            # **パスワードそのものは返しません。** 有無さえ分かれば、
+            # 拡張側は「まだ設定されていません」と案内できます。
+            "hasPassword": bool(settings.get("proxy_password", "")),
+        })
+
+    def do_set_proxy(self, request_id, params):
+        settings = self.backend.config_manager.settings
+        mode = params.get("mode") or "system"
+        if mode not in ("system", "manual", "none"):
+            reply_error(request_id, t("Unknown proxy mode: {mode}", mode=mode))
+            return
+        try:
+            port = int(params.get("port", settings.get("proxy_port", 8080)))
+        except (TypeError, ValueError):
+            reply_error(request_id, t("The proxy port must be a number."))
+            return
+
+        settings["proxy_mode"] = mode
+        settings["proxy_host"] = str(params.get("host") or "").strip()
+        settings["proxy_port"] = port
+        settings["proxy_username"] = str(params.get("username") or "").strip()
+        if self._save_proxy(request_id):
+            reply(request_id, {"saved": True})
+
+    def do_set_proxy_password(self, request_id, params):
+        # 空文字は「消す」という指示です。拡張側は空欄の確定を消去として
+        # 案内しているので、ここで未指定と区別しません。
+        self.backend.config_manager.settings["proxy_password"] = str(
+            params.get("password") or "")
+        if self._save_proxy(request_id):
+            reply(request_id, {"saved": True})
+
+    def do_detect_proxy(self, request_id, params):
+        """環境変数 / Windows の設定から入力候補を拾います。**保存はしません。**
+
+        どこに入れるかは拡張側 (VSCode の設定) の担当なので、ここで
+        config.json へ書くと、設定画面に出ていない値が効いてしまいます。
+        """
+        found = proxy_manager.detect_from_environment()
+        reply(request_id, {
+            "found": bool(found.get("host")),
+            "host": found.get("host", ""),
+            "port": found.get("port", 8080),
+        })
+
+    def do_test_proxy(self, request_id, params):
+        """接続テスト。**読み取りループでは待ちません。**
+
+        最大20秒かかるので、ここで待つとその間ほかの要求が一切通りません
+        (_start_gui と同じ理由です)。
+        """
+        threading.Thread(
+            target=self._test_proxy_worker, args=(request_id,), daemon=True,
+        ).start()
+
+    @staticmethod
+    def _test_proxy_worker(request_id):
+        try:
+            reachable, message = _test_proxy_connection()
+        except Exception as e:
+            logger.error("接続テストに失敗:\n%s", traceback.format_exc())
+            reply_error(request_id, t("Unexpected error: {reason}", reason=e))
+            return
+        reply(request_id, {"reachable": reachable, "message": message})
 
     # ---- ブラウザ画面が要る操作 ----
 

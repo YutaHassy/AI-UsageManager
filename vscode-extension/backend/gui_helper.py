@@ -124,7 +124,9 @@ def log_step(message: str):
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["add", "edit", "relogin", "delete"])
+    parser.add_argument(
+        "mode",
+        choices=["add", "edit", "relogin", "delete", "silent_refresh"])
     parser.add_argument("--result", required=True, help="結果を書き出す JSON のパス")
     parser.add_argument("--id", default="", help="対象アカウントの ID")
     return parser.parse_args()
@@ -151,6 +153,7 @@ from services import browser_profile, proxy_manager         # noqa: E402
 from services.config_manager import ConfigManager, default_config_dir  # noqa: E402
 from services.providers import AUTH_COOKIE                  # noqa: E402
 from services.resources import app_icon_path                # noqa: E402
+from ui import session_refresher                            # noqa: E402
 from ui.account_dialog import AccountDialog, LoginDialog    # noqa: E402
 
 logger = logging.getLogger("gui_helper")
@@ -429,7 +432,64 @@ def do_delete(args, manager: ConfigManager, accounts: list) -> dict:
     return {"ok": True, "accountId": account.id, "changed": True}
 
 
-HANDLERS = {"add": do_add, "edit": do_edit, "relogin": do_relogin, "delete": do_delete}
+def do_silent_refresh(args, manager: ConfigManager, accounts: list) -> dict:
+    """ログイン画面を出さずに Cookie を取り直せないか、1回だけ試します。
+
+    プロファイルにログイン状態が残っていれば、対象サイトを一度読み込むだけで
+    新しいセッション Cookie が発行されます。残っていなければログイン画面へ
+    飛ばされるので、そのときだけ利用者に手で入り直してもらいます。
+
+    **窓は出しません。** 出さないことがこのモードの目的です。取れなかった
+    ときも黙って戻り、ログイン画面を出すかどうかは呼び出し元 (cli.py) が
+    決めます。
+
+    **ここだけ app.exec() を回します。** ほかのモードは dialog.exec() が
+    自前で入れ子の待ち合わせを作りますが、こちらは表に出す窓が無いので、
+    読み込みが終わるまで回してくれるものが他にありません。
+    """
+    account = next((a for a in accounts if a.id == args.id), None)
+    if account is None:
+        return {"ok": False, "error": t("The account was not found.")}
+
+    provider = account.get_provider()
+    if provider.auth_kind != AUTH_COOKIE or not provider.home_url:
+        # Cookie で入る取得先でなければ、やり直せるものが無い。
+        return {"ok": True, "status": session_refresher.LOGIN_REQUIRED,
+                "changed": False}
+
+    outcome = {}
+
+    def on_finished(account_id: str, cookie_header: str, status: str):
+        outcome["cookie"] = cookie_header
+        outcome["status"] = status
+        QApplication.instance().quit()
+
+    refresher = session_refresher.SessionRefresher(account.id, provider)
+    refresher.finished.connect(on_finished)
+    # exec() が回り始めてから読み込みを始める。先に始めると、終わるのが
+    # 早かったときに quit() が exec() より前に来て、誰も止めない待ちが残る。
+    QTimer.singleShot(0, refresher.start)
+    QApplication.instance().exec()
+
+    status = outcome.get("status", session_refresher.FAILED)
+    cookie = outcome.get("cookie", "")
+    log_step(f"画面なしでの復帰: status={status}")
+
+    if status != session_refresher.REFRESHED or not cookie:
+        # **失敗ではありません。** 「自動では戻せなかった」というだけで、
+        # 呼び出し元はこのあと利用者にログインを促します。
+        return {"ok": True, "status": status, "changed": False}
+
+    account.cookie = cookie
+    if not manager.save(accounts, manager.settings):
+        return {"ok": False,
+                "error": t("The settings could not be saved. Check the log.")}
+    return {"ok": True, "status": status, "accountId": account.id,
+            "changed": True}
+
+
+HANDLERS = {"add": do_add, "edit": do_edit, "relogin": do_relogin,
+            "delete": do_delete, "silent_refresh": do_silent_refresh}
 
 
 def main():

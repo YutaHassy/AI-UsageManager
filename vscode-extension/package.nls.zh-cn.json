@@ -13,6 +13,9 @@
   "command.showLog.title": "显示日志",
   "command.restartBackend.title": "重启后端",
   "command.selectLanguage.title": "语言",
+  "command.setProxyPassword.title": "设置代理密码",
+  "command.testProxy.title": "测试代理连接",
+  "command.importProxyFromEnvironment.title": "从环境变量导入代理",
   "configuration.pythonPath.description": "运行后端的 Python 可执行文件。留空则自动查找（依次为：Python 扩展当前选择的解释器 → 工作区的 `.venv` / `venv` → PATH 上的 `py -3` / `python3` / `python`）。请指定已安装 `requests` 的环境。",
   "configuration.guiPythonPath.description": "运行添加、编辑账号和重新登录（登录用浏览器窗口）的 Python。只有这些操作需要 `PySide6` 和 `PySide6-Addons`。留空则使用与 `#aiUsageManager.pythonPath#` 相同的解释器。若只查看和刷新用量，则无需设置。",
   "configuration.language.description": "扩展界面和后端消息所使用的语言。命令面板中的命令名称，以及本设置项自身的说明文字，始终跟随 VS Code 自身的显示语言，因此更改此设置不会改变它们。",
@@ -29,5 +32,12 @@
   "configuration.autoRefreshMinutes.enum.30": "每 30 分钟",
   "configuration.autoRefreshMinutes.enum.60": "每 60 分钟",
   "configuration.refreshOnOpen.description": "打开界面时先全部刷新一次。",
-  "configuration.showStatusBar.description": "在状态栏显示最接近上限的账号。"
+  "configuration.showStatusBar.description": "在状态栏显示最接近上限的账号。",
+  "configuration.proxy.mode.description": "后端连接网络的方式。\"system\"（默认）跟随 Windows 的代理设置和环境变量（HTTP_PROXY / HTTPS_PROXY）。\"manual\" 使用下方指定的主机和端口。\"none\" 始终直接连接。",
+  "configuration.proxy.mode.enum.system": "跟随系统代理设置（推荐）",
+  "configuration.proxy.mode.enum.manual": "使用手动指定的代理",
+  "configuration.proxy.mode.enum.none": "不使用代理（直接连接）",
+  "configuration.proxy.host.description": "代理服务器的主机名。仅当 \"aiUsageManager.proxy.mode\" 为 \"manual\" 时使用。",
+  "configuration.proxy.port.description": "代理服务器的端口。仅当 \"aiUsageManager.proxy.mode\" 为 \"manual\" 时使用。",
+  "configuration.proxy.username.description": "用于代理身份验证的用户名。密码不能在此设置 — 请从命令面板运行“AI-UsageManager：设置代理密码”。它会与此设置文件分开加密保存。"
 }

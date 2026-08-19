@@ -108,6 +108,9 @@ All commands are under the `AI-UsageManager` category in the Command Palette.
 | `Show Log` | Shows the backend log in an output channel |
 | `Restart Backend` | Recreates the Python process |
 | `Language` | Picks the display language |
+| `Set Proxy Password` | Sets or clears the proxy password (stored encrypted, never in settings.json) |
+| `Test Proxy Connection` | Tries to reach the network with the current proxy settings |
+| `Import Proxy From Environment Variables` | Fills the proxy host/port settings from `HTTP_PROXY` / `HTTPS_PROXY` |
 
 Add, edit, delete and sign-in-again are also available as buttons in the view.
 
@@ -121,11 +124,20 @@ Add, edit, delete and sign-in-again are also available as buttons in the view.
 | `aiUsageManager.autoRefreshMinutes` | `0` | Refresh interval in minutes (`0`, `1`, `5`, `10`, `30`, `60`). `0` disables it |
 | `aiUsageManager.refreshOnOpen` | `true` | Refresh once when the view is opened |
 | `aiUsageManager.showStatusBar` | `true` | Show the account closest to its limit in the status bar |
+| `aiUsageManager.proxy.mode` | `system` | How to reach the network: `system`, `manual`, `none` |
+| `aiUsageManager.proxy.host` | `""` | Proxy host, used when `proxy.mode` is `manual` |
+| `aiUsageManager.proxy.port` | `8080` | Proxy port, used when `proxy.mode` is `manual` |
+| `aiUsageManager.proxy.username` | `""` | Proxy user name. The password has no setting key — use `Set Proxy Password` instead |
 
 `aiUsageManager.language` covers the extension's own views and the backend's
 messages. Command names in the Command Palette and the description text of the
 settings themselves always follow VS Code's display language — VS Code resolves
 those, and an extension cannot override them.
+
+**The proxy password is never stored in `settings.json`.** That file is plain
+text and can be synced across machines through Settings Sync. The password goes
+through the `Set Proxy Password` command instead, and the backend encrypts it
+with Windows DPAPI before writing it to its own config file.
 
 ## Privacy and stored credentials
 
@@ -290,6 +302,9 @@ pip install PySide6 PySide6-Addons
 | `Show Log` | バックエンドのログを出力チャンネルに表示します |
 | `Restart Backend` | Python プロセスを作り直します |
 | `Language` | 表示言語を選びます |
+| `Set Proxy Password` | プロキシのパスワードを設定・消去します (暗号化して保存され、settings.json には書かれません) |
+| `Test Proxy Connection` | いまのプロキシ設定で通信できるか試します |
+| `Import Proxy From Environment Variables` | `HTTP_PROXY` / `HTTPS_PROXY` からホストとポートの設定を埋めます |
 
 追加・編集・削除・再ログインは、画面のボタンからも実行できます。
 
@@ -303,11 +318,20 @@ pip install PySide6 PySide6-Addons
 | `aiUsageManager.autoRefreshMinutes` | `0` | 自動更新の間隔 (分)。`0` / `1` / `5` / `10` / `30` / `60`。`0` で無効 |
 | `aiUsageManager.refreshOnOpen` | `true` | 画面を開いたときに1回更新する |
 | `aiUsageManager.showStatusBar` | `true` | ステータスバーに最逼迫アカウントを出す |
+| `aiUsageManager.proxy.mode` | `system` | ネットワークへの接続方法 (`system` / `manual` / `none`) |
+| `aiUsageManager.proxy.host` | `""` | プロキシのホスト名。`proxy.mode` が `manual` のとき使用 |
+| `aiUsageManager.proxy.port` | `8080` | プロキシのポート。`proxy.mode` が `manual` のとき使用 |
+| `aiUsageManager.proxy.username` | `""` | プロキシのユーザーID。パスワードには設定キーが無く、`Set Proxy Password` コマンドから設定します |
 
 `aiUsageManager.language` が効くのは、この拡張の画面とバックエンドのメッセージ
 です。**コマンドパレットのコマンド名と、設定項目の説明文そのものは、VS Code 自身の
 表示言語に従います。** これらは VS Code が解決するもので、拡張からは差し替えられ
 ません。
+
+**プロキシのパスワードは `settings.json` には書かれません。** このファイルは
+平文で、Settings Sync により他端末にも複製され得ます。パスワードは
+`Set Proxy Password` コマンド経由で渡され、バックエンドが Windows DPAPI で
+暗号化してから自分の設定ファイルに保存します。
 
 ### 資格情報の扱い
 

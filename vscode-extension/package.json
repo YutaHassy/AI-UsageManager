@@ -118,6 +118,21 @@
         "command": "aiUsageManager.selectLanguage",
         "title": "%command.selectLanguage.title%",
         "category": "AI-UsageManager"
+      },
+      {
+        "command": "aiUsageManager.setProxyPassword",
+        "title": "%command.setProxyPassword.title%",
+        "category": "AI-UsageManager"
+      },
+      {
+        "command": "aiUsageManager.testProxy",
+        "title": "%command.testProxy.title%",
+        "category": "AI-UsageManager"
+      },
+      {
+        "command": "aiUsageManager.importProxyFromEnvironment",
+        "title": "%command.importProxyFromEnvironment.title%",
+        "category": "AI-UsageManager"
       }
     ],
     "configuration": {
@@ -169,6 +184,32 @@
           "type": "boolean",
           "default": true,
           "description": "%configuration.showStatusBar.description%"
+        },
+        "aiUsageManager.proxy.mode": {
+          "type": "string",
+          "default": "system",
+          "enum": ["system", "manual", "none"],
+          "enumDescriptions": [
+            "%configuration.proxy.mode.enum.system%",
+            "%configuration.proxy.mode.enum.manual%",
+            "%configuration.proxy.mode.enum.none%"
+          ],
+          "description": "%configuration.proxy.mode.description%"
+        },
+        "aiUsageManager.proxy.host": {
+          "type": "string",
+          "default": "",
+          "description": "%configuration.proxy.host.description%"
+        },
+        "aiUsageManager.proxy.port": {
+          "type": "number",
+          "default": 8080,
+          "description": "%configuration.proxy.port.description%"
+        },
+        "aiUsageManager.proxy.username": {
+          "type": "string",
+          "default": "",
+          "description": "%configuration.proxy.username.description%"
         }
       }
     }
