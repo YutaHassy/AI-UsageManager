@@ -5,6 +5,353 @@ All notable changes to the AI-UsageManager extension are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-08-21
+
+The last three releases each removed one more reason to install PySide6. This
+one removes the reason itself. **The built-in sign-in browser is gone**, and
+with it the last thing in the extension that needed a browser engine. Adding
+and editing an account now happen on one screen inside the usage tab, and the
+credential comes from the browser you already use.
+
+Two things forced this. The window made anyone who only wanted to paste an API
+key install QtWebEngine — which is what 1.5.0, 1.5.1 and 1.6.0 were each
+chipping away at, one operation at a time. And some providers refuse to sign in
+from an embedded browser at all: Gemini never could, because Google blocks it,
+and that block exists precisely because whoever embeds the browser can watch you
+type your password. The workaround built for Gemini — copy the cookie out of
+your normal browser's developer tools — turned out to be the better path for
+every provider. It is now the only one.
+
+**Installing the vsix is now the whole installation.** A machine with Python and
+`requests` can register its first account without installing anything else.
+
+### Added
+
+- **A form for adding and editing, inside the usage tab.** Provider, name,
+  credential, spending cap and enabled/disabled are visible together and change
+  as a unit. The previous release did this with one-question-at-a-time pickers,
+  which needed no window but showed you only the question in front of you —
+  and these fields depend on each other, since the provider decides what the
+  credential even means.
+
+  Choosing a provider rewrites the rest of the form: its labels, its example
+  text, whether there is a spending cap at all, and the numbered steps for
+  getting its credential. A button next to those steps opens the provider's
+  page **in your default browser**, which is usually signed in already.
+
+- **Claude can be registered from a normal browser.** It had a manual path in
+  the code — `extract_cookie_header` has always understood "Copy as cURL"
+  output, and the validator already said "filter on `organizations` and copy it
+  again" — but nothing in the interface offered it. The steps existed; the
+  doorway did not. Anthropic API gained a path to its Admin keys page for the
+  same reason.
+
+### Removed
+
+- **The sign-in window, and every route to it.** `add_account`, `relogin` and
+  `cancel_gui` are gone from the backend protocol, along with the helper
+  process, the lock that serialised window operations, and the progress
+  notification that asked you to continue in the other window. `gui_helper.py`
+  is still in the repository but nothing can reach it: the extension has no
+  code that starts it, it is not shipped in the vsix, and it cannot run from
+  where it sits (`ui/` is no longer copied next to it). Its header says so.
+
+- **`aiUsageManager.guiPythonPath`.** It existed to point at a second
+  interpreter that had PySide6 in it. **If you had it set, the extension
+  removes it from your settings file on the first launch after updating**, and
+  says so once — a setting dropped from the manifest stays in `settings.json`
+  and is flagged as unknown forever otherwise, and whoever removed it is the
+  one who should clean up after it. Only settings named in an explicit list
+  are touched, and a settings file that cannot be written is logged and left
+  alone.
+
+- **Silent renewal of Claude sessions.** This is a real loss and the only one.
+  An expiring Claude cookie used to be refreshed in the background using the
+  embedded browser's profile; that profile went with the window. An expired
+  Claude session is now reported to you and you paste a fresh credential.
+  ChatGPT and Gemini are unaffected — those are renewed by the provider.
+
+### Fixed
+
+Found by reviewing the new form before shipping it, not by using it:
+
+- **Changing an account's provider carried its spending cap across.** The
+  backend has always reset the cap when the provider changes, because the
+  currency changes with it — but that reset only applied when the request
+  omitted the cap, and the form always sent it. Editing an Azure OpenAI account
+  (JPY) into an Anthropic API account (USD) would have kept the number and
+  changed its meaning by two orders of magnitude. **Nothing validates a
+  spending cap**, so nothing would have said a word. The form now swaps the
+  cap, the extra field and the credential box to the new provider's defaults.
+
+- **Changing the provider kept the old credential.** A Claude cookie is not an
+  Azure API key. Keeping it produced an account that reads as "credential set"
+  in the list and fails every fetch. Switching providers now requires a fresh
+  credential, the same rule the extra field and the spending cap already
+  followed.
+
+- **A spending cap of `1,000` was silently saved as no cap at all.** An
+  `<input type="number">` reports an empty value when what is typed is not a
+  valid number, so thousands separators and full-width digits arrived as `0` —
+  and `0` means "no cap", so the gauge quietly disappeared. The backend has a
+  "the spending cap must be a number" message that could never be reached. The
+  field is now plain text and the backend does the judging.
+
+- **The save button did nothing, silently, if the provider could not be
+  resolved.** An account whose provider is not in the list (a hand-edited
+  `config.json`) produced a form that submitted nothing and reported nothing.
+  A button that does nothing is the worst failure available. It now submits and
+  lets the backend answer "unknown provider".
+
+- **"Save anyway" could be pressed twice and create two accounts.** It was left
+  out of the set of controls disabled while a save is in flight.
+
+- **A malformed payload froze the whole view.** Iterating a `providers` that
+  was not an array threw out of the message handler, after which no further
+  state was ever rendered.
+
+- **Opening the form dragged the usage tab to the leftmost editor group.**
+  Revealing an existing panel passed it a column — "the active text editor's
+  column, or 1" — and **a webview is not a text editor**, so while you were
+  looking at this panel that expression was always 1. Pressing Add or Edit
+  therefore moved the tab, every time, for anyone who keeps it in a split on
+  the right. Revealing without a column leaves it where it is.
+
+- **The credential stayed in memory after the form closed.** The form's DOM is
+  kept between openings; the box is now cleared on the way out. Webviews are
+  inspectable with DevTools.
+
+- Accessibility of the new form: hints are tied to their fields with
+  `aria-describedby`, the error area announces itself with `role="alert"`, and
+  Esc cancels.
+
+### Changed
+
+- **"Sign In Again" opens the edit form.** The command and the button stay,
+  because a Claude session that has expired is exactly when someone needs to be
+  shown where to paste — but there is no window behind it any more.
+- Every provider whose credential comes out of a browser now carries its own
+  instructions for getting it, and a test asserts it. When the browser is the
+  only path, a provider without instructions is a provider nobody can register.
+  Azure OpenAI is the exception and stays one: the gateway is something each
+  organization runs, so no URL would be right for everyone. It says who issues
+  the key instead.
+- The catalogue check now covers the new strings; 21 were added and 61 that
+  described the removed window were dropped, in all three languages. Four of
+  those additions were found by a review pass, not by the check: the tooltips
+  on "＋ Add", "Edit" and "🔑 Sign in again", and the note shown when a
+  credential expires, were all still promising a window that no longer opens.
+  **They passed every check** — the strings were present, translated in all
+  three languages, and their placeholders matched. Being present and being
+  true are different things.
+
+- **The build now checks the webview's two-way protocol.** The message types
+  `media/main.js` sends and the ones `panel.js` handles were kept in step by
+  hand. A missing handler makes a button that does nothing, silently; a
+  handler nobody sends becomes unreachable code that reads as live. Removing
+  the sign-in window left three of the latter behind, which is what prompted
+  the check.
+
+- `gui_helper.py` is no longer scanned for translatable strings, which is what
+  had been keeping guidance for the removed `guiPythonPath` setting alive in
+  all three catalogues.
+
+## [1.6.0] - 2026-08-20
+
+Editing had been asking for PySide6 for no reason, and the fix for that (1.5.0)
+turned out to have a defect of its own (1.5.1). Both were instances of a kind,
+so this release is the result of looking for the rest of the kind. Three
+patterns came out of it: **an operation routed through a window it does not
+need**, **advice that cannot be followed**, and **things that pile up where no
+check is looking**. Each was found somewhere else in the codebase.
+
+### Added
+
+- **Adding an account no longer needs PySide6 either.** This was the third
+  instance of the same mistake. The dialog behind "Add Account" is a plain form
+  — the browser only appears when you press the sign-in button inside it — so
+  anyone who was going to paste an API key was still made to install a browser
+  engine. Two of the five providers (Azure OpenAI, Anthropic API) authenticate
+  with a pasted key and never involve a browser at all.
+
+  "Add Account" now asks which provider first, and for cookie providers offers
+  the choice between signing in with the built-in browser and pasting the
+  credential by hand. The first goes through the window as before; the second
+  stays entirely inside VS Code, through a new `create_account` request that
+  reuses `update_account` for its validation rather than repeating the rules.
+
+  **A fresh install with no PySide6 can now create its first account.** Until
+  now it could not, except by hand-editing `config.json`. Verified end to end
+  against an interpreter without PySide6: create, edit and delete all succeed;
+  only the sign-in window refuses, which is the point.
+
+- **A command to open the settings file (`config.json`).** Several errors told
+  you to add a domain to `aoai_allowed_hosts`, a setting that exists only in
+  that file, with no way to reach it from anywhere in the UI. It is deliberately
+  not lifted into VS Code settings — that file is the sole owner, and mirroring
+  it the way the proxy settings are mirrored would let an empty default silently
+  wipe out a restriction on where your API key may be sent.
+
+- **The build now checks that every string in the source has a catalogue
+  entry.** It used to check only that the three language files agreed with each
+  other, on the grounds that multi-line concatenations could not be extracted
+  reliably. They can: Python through `ast` (the parser folds implicit
+  concatenation), JavaScript through a small scanner that folds `+`, and the
+  `t(variable)` forms by importing the provider attributes they come from.
+
+### Fixed
+
+- **Thirteen strings had no translation and came out in English on a Japanese
+  display.** All but one were in the Azure OpenAI provider, which is a live
+  entry in the list — its description, the placeholder in its endpoint field,
+  and the confirmation shown *every time* you save an endpoint. They were the
+  residue of one rewrite: the provider moved from "fixed internal domain" to
+  "you list the domains you allow", and the new wording was never added while
+  the old wording was never removed. The catalogues agreed with each other
+  perfectly — all three had been left behind together — so the old check saw
+  nothing wrong. **Agreeing and being present are different things.**
+
+- **Four places pointed at a fix that does not exist or does not work.**
+  "Enter the proxy user name and password in Settings" — the password
+  deliberately has no setting, because `settings.json` is plain text and syncs
+  between machines; it has its own encrypted entry point, which the username
+  setting now links to directly. "Add the domain to the `aoai_allowed_hosts`
+  setting" — reachable now, see above. "Point `REQUESTS_CA_BUNDLE` at the CA
+  certificate" — correct, but an environment variable set after the editor
+  started never reaches the backend, not even across a backend restart, and the
+  message now says so.
+
+- **Changing the display language left already-fetched rows in the old
+  language.** The quota labels, the status summaries and the error text are all
+  translated by the backend, and the extension's cache was keeping the previous
+  language's strings. It is now cleared and refetched.
+
+- **Four messages interpolated an untranslated label**, producing "API key が
+  未設定です" where "API キー" was meant. The other eleven call sites were
+  already passing the label through `t()`.
+
+- **On a machine without PySide6, a failed account spawned a helper process
+  every minute**, each dying in 0.2 seconds — and holding the GUI lock while it
+  did, which could make a legitimate "Add Account" fail with "another operation
+  is in progress". The backend now recognises a missing dependency as permanent
+  for the life of the process and stops trying.
+
+- **The test suite's guard against importing the build-time copies covered
+  `services` but not `models`.** Deliberately importing the copy of `models`
+  first went through unnoticed. Since `tests/test_backend_rpc.py` imports
+  `models.account` and runs first in collection order, this was not theoretical.
+
+- `README.md` documented `autoRefreshMinutes` as defaulting to `0`; it has
+  defaulted to `1` since 1.3.0. `extension.js` carried a second copy of that
+  default that disagreed with the manifest.
+
+### Changed
+
+- `get_proxy` is no longer dead code: "Set Proxy Password" now tells you whether
+  one is already saved, so confirming an empty box no longer clears a password
+  you did not know was there.
+- Five catalogue entries for wording that no longer exists were removed, and the
+  ones the new wording needs were added, in all three languages.
+- Comments and docs that still described editing (and then adding) as needing
+  PySide6 were corrected — in the backend, in the `guiPythonPath` setting
+  description in four languages, and in the README.
+
+## [1.5.1] - 2026-08-20
+
+A review of 1.5.0 found a defect in it, and a claim in it that was not true.
+
+### Fixed
+
+- **An account with no stored credential could not be edited at all.** The
+  "enter a credential" check in `update_account` fired even when the request
+  never touched the credential, so renaming such an account — or merely enabling
+  it — failed with "Enter Cookie." The same enable/disable toggle worked from
+  the list and failed from the edit menu, because the list goes through
+  `set_enabled`. It now refuses only when the request tries to *empty* a
+  credential, which is the one case that throws something away.
+
+  This is not a hypothetical account. A `config.json` carried to another machine
+  or another Windows user cannot be decrypted, and `secret_store` returns an
+  empty string when it cannot — every account in that file lands in this state,
+  and until now every one of them was uneditable except by pasting a credential
+  first.
+
+### Changed
+
+- **The 1.5.0 note claimed the extension was "usable end to end without
+  PySide6". It is not.** Adding an account still opens the sign-in window, and
+  the dialog behind it is a plain form — the browser is only reached by pressing
+  the sign-in button inside it. Two of the five providers (Azure OpenAI,
+  Anthropic API) authenticate with a pasted API key and never involve a browser
+  at all, yet registering one still requires PySide6. **It is the same mistake
+  deleting and editing had, one door further along**, and it is not fixed here.
+
+  What is true today: an account that already exists can be kept working without
+  PySide6 — renamed, re-pointed, re-credentialed, disabled, deleted. A fresh
+  install without PySide6 cannot create its first account except by hand-editing
+  `config.json`.
+
+  The overstatement has been corrected in the backend's own comments, in the
+  `aiUsageManager.guiPythonPath` setting description (all four languages), and
+  in the 1.5.0 entry below.
+
+## [1.5.0] - 2026-08-20
+
+"Edit" opened the same PySide6 dialog the desktop build uses, so renaming an
+account — or pasting an API key — asked for a browser engine that has nothing to
+do with either. On a Python without PySide6 the extension answered "PySide6 is
+required to show the sign-in window", and there was no way to edit an account
+from inside VS Code at all. Deleting was moved off that path in 1.4.0 for the
+same reason; editing is the other half of it.
+
+### Changed
+
+- **Editing an account happens inside VS Code and no longer needs PySide6.**
+  "Edit Account" opens a quick-pick menu — name, provider, the extra field, the
+  spending cap, the credential, enable/disable — and each entry is edited in
+  VS Code's own input box. The backend writes the change through a new
+  `update_account` request that never launches a window, the way
+  `delete_account` already worked.
+
+  **A credential can be pasted here too**, so an account that already exists
+  can be kept working without PySide6 (adding a new one still opens the
+  window — see 1.5.1). Providers that offer a manual route
+  (`manual_url` / `manual_steps`) show their steps first and can open the page
+  in your normal browser. The box is masked, and leaving it empty keeps the
+  saved value instead of clearing it — a request carries only the fields you
+  actually changed.
+
+  The checks are the ones `ui/account_dialog.py` runs: the same normalisation,
+  the same "that does not look like `{marker}`" questions, asked before anything
+  is saved. A paste is scrutinised the same way whichever door it comes in
+  through. What differs is *when* they run — the desktop dialog confirms every
+  field at once, while this menu checks only the field you just touched, because
+  a warning about a field you did not open has nowhere to be fixed.
+
+  Only "sign in with the built-in browser" still opens a window, and it stays on
+  the menu for the providers that support it.
+
+- `gui_helper.py` no longer has an `edit` mode and the `edit_account` request is
+  gone from the backend protocol. Keeping them would mean two ways to edit an
+  account, and two places to keep the validation honest.
+
+### Added
+
+- `list_providers` returns what each provider needs — labels, hints, whether it
+  takes an extra field or a spending cap, and how to fetch a credential by hand.
+  The edit menu asks it what to offer instead of hard-coding the answers.
+  Providers retired from the list are returned when asked for by id, so an
+  account still using one can be edited rather than becoming unreachable.
+
+### Fixed
+
+- **`aiUsageManager.guiPythonPath` took effect only after a window reload.** The
+  value is handed to the backend process as an environment variable when it is
+  spawned, and the configuration watcher did not list the setting — so the
+  extension pointed at that very setting when PySide6 was missing, and then
+  ignored it until the window was reloaded. It now restarts the backend the way
+  `pythonPath` already did.
+
 ## [1.4.0] - 2026-08-19
 
 ChatGPT accounts stopped working after a while and said "sign in again". That

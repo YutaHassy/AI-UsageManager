@@ -382,22 +382,6 @@ button.ghost:disabled {
     cursor: default;
 }
 
-/* ログイン画面を開いている間の案内 */
-.banner {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 10px;
-    padding: 8px 10px;
-    border: 1px solid var(--vscode-focusBorder);
-    border-radius: 5px;
-    background-color: var(--vscode-editorWidget-background, transparent);
-}
-
-.banner-text {
-    font-weight: 600;
-}
-
 .detail-status {
     font-weight: 600;
 }
@@ -430,6 +414,148 @@ button.ghost:disabled {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+
+/* ---------------- 追加・編集のフォーム ---------------- */
+/*
+ * 1画面に全項目を並べます。**入力欄は VSCode の見た目に合わせます** —
+ * 色を決め打ちにすると、利用者がテーマを変えたときにここだけ浮きます。
+ */
+
+.form {
+    padding: 14px 16px 20px;
+    max-width: 720px;
+}
+
+.form-title {
+    margin: 0 0 14px;
+    font-size: 1.15em;
+    font-weight: 600;
+}
+
+.form-row {
+    margin-bottom: 14px;
+}
+
+.form-label {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--vscode-foreground);
+}
+
+.form-control {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 4px 8px;
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
+    color: var(--vscode-input-foreground);
+    background-color: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+    border-radius: 2px;
+}
+
+.form-control:focus {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: -1px;
+}
+
+.form-control:disabled {
+    opacity: 0.6;
+}
+
+/* 貼り付ける値は長い (cURL 一式が丸ごと入ります)。折り返して全体を見せます。 */
+.form-credential {
+    resize: vertical;
+    min-height: 56px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.form-hint {
+    margin-top: 3px;
+    color: var(--vscode-descriptionForeground);
+    font-size: 0.92em;
+}
+
+.form-hint:empty {
+    display: none;
+}
+
+/* 取り方の手順。**畳まずに出します** — ここを読まないと先へ進めない人が、
+   開き方を探すところで詰まります。 */
+.form-manual {
+    margin-top: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 3px;
+    background-color: var(--vscode-textBlockQuote-background,
+                          var(--vscode-editor-background));
+}
+
+.form-steps {
+    margin: 8px 0 0;
+    color: var(--vscode-descriptionForeground);
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 0.92em;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.form-steps:empty {
+    display: none;
+}
+
+.form-row-check {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.form-check {
+    margin: 0;
+}
+
+.form-label-inline {
+    color: var(--vscode-foreground);
+}
+
+/* 保存できない理由と、尋ねられている確認。**同じ場所に出します** —
+   利用者が見るべきところが状況で動くと、見落とします。 */
+.form-notice {
+    margin: 4px 0 14px;
+    padding: 10px 12px;
+    border-radius: 3px;
+    border-left: 3px solid var(--vscode-editorWarning-foreground,
+                             var(--vscode-panel-border));
+    background-color: var(--vscode-inputValidation-warningBackground,
+                          var(--vscode-editor-background));
+}
+
+.form-notice.is-error {
+    border-left-color: var(--vscode-editorError-foreground,
+                           var(--vscode-panel-border));
+    background-color: var(--vscode-inputValidation-errorBackground,
+                          var(--vscode-editor-background));
+}
+
+.form-notice-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin-bottom: 8px;
+}
+
+.form-notice-text:empty {
+    margin-bottom: 0;
+}
+
+.form-footer {
+    display: flex;
+    gap: 8px;
+    margin-top: 18px;
 }
 
 .hidden {

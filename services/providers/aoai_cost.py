@@ -129,7 +129,13 @@ class AoaiCostProvider(UsageProvider):
 
     auth_kind = AUTH_TOKEN
     credential_label = "API key"
-    credential_hint = "Paste the gateway's api-key."
+    credential_hint = ("Paste the gateway's api-key.\n"
+                       "Whoever runs the gateway issues it.")
+
+    # 取ってくる手順 (manual_url / manual_steps) は持ちません。このゲートウェイは
+    # 組織ごとに立てるもので、キーの発行画面に万人へ通用する URL が無いためです
+    # (extra_field_default を空にしているのと同じ理由)。開けない URL を案内する
+    # くらいなら、発行元を一言で示すほうが利用者は先へ進めます。
 
     uses_extra_field = True
     extra_field_label = "Endpoint URL"
@@ -185,8 +191,8 @@ class AoaiCostProvider(UsageProvider):
                 "would receive your API key.\n"
                 "Even if you save this, sending is blocked at fetch time "
                 "and the fetch fails.\n"
-                "Change the endpoint, or add the domain to the "
-                "aoai_allowed_hosts setting.",
+                "Change the endpoint, or add the domain to "
+                "aoai_allowed_hosts in the settings file (config.json).",
                 host=parsed.hostname, allowed=", ".join(_allowed_hosts),
             )
 
@@ -197,7 +203,8 @@ class AoaiCostProvider(UsageProvider):
                 "Save it only if that host is a gateway run by you or your "
                 "organisation.\n"
                 "To refuse every other destination from now on, list your "
-                "domains in the aoai_allowed_hosts setting.\n"
+                "domains in aoai_allowed_hosts in the settings file "
+                "(config.json).\n"
                 "Save it anyway?",
                 host=parsed.hostname,
             )
@@ -208,7 +215,7 @@ class AoaiCostProvider(UsageProvider):
         if not api_key:
             raise UsageError(
                 t('{credential} is not set. Set it from "Edit".',
-                  credential=self.credential_label),
+                  credential=t(self.credential_label)),
                 auth_error=True,
             )
 
@@ -242,8 +249,8 @@ class AoaiCostProvider(UsageProvider):
             raise UsageError(t(
                 "The endpoint host \"{host}\" is outside the domains you allow "
                 "({allowed}), so sending the API key was blocked.\n"
-                'Check the endpoint URL from "Edit", or add the domain to the '
-                "aoai_allowed_hosts setting.",
+                'Check the endpoint URL from "Edit", or add the domain to '
+                "aoai_allowed_hosts in the settings file (config.json).",
                 host=parsed.hostname, allowed=", ".join(_allowed_hosts),
             ))
 

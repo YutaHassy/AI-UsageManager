@@ -37,19 +37,26 @@ from services import browser_profile, providers, secret_store, usage_status  # n
 # 確認する。** 何らかの理由で vscode-extension/backend/ 側のコピーが先に
 # import されてしまうと、原本を直してもテストに反映されないという、
 # 気づきにくい事故になるため、その場で fail-fast する。
-assert os.path.abspath(os.path.dirname(usage_status.__file__)) == \
-    os.path.join(PROJECT_ROOT, "services"), (
-        "services パッケージがリポジトリ直下ではなく "
-        f"{usage_status.__file__} から読み込まれました。"
-        " vscode-extension/backend/ のコピーを見ていないか確認してください。"
-    )
+# **services だけでなく models も見ること。** 以前はここが usage_status
+# (= services) しか見ておらず、models だけがコピー側から読み込まれた場合は
+# 素通りしていた。上の説明は最初から両方を挙げているのに、実装が片方だけ
+# だった。tests/test_backend_rpc.py が models.account を import しており、
+# pytest の収集順ではそちらが先に走るので、机上の話ではない。
+for _module, _package in ((usage_status, "services"),
+                          (sys.modules["models.account"], "models")):
+    assert os.path.abspath(os.path.dirname(_module.__file__)) == \
+        os.path.join(PROJECT_ROOT, _package), (
+            f"{_package} パッケージがリポジトリ直下ではなく "
+            f"{_module.__file__} から読み込まれました。"
+            " vscode-extension/backend/ のコピーを見ていないか確認してください。"
+        )
 
 from services.usage_status import (                                   # noqa: E402
     LEVEL_CAUTION, LEVEL_LIMITED, LEVEL_OK, LEVEL_UNKNOWN,
 )
 from services.config_manager import ConfigLoadError, ConfigManager    # noqa: E402
 from services.providers import (                                      # noqa: E402
-    AMOUNT, MONEY, PERCENT, UsageError,
+    AMOUNT, AUTH_COOKIE, MONEY, PERCENT, UsageError,
     amount_metric, apply_budget, build_result, money_metric, percent_metric,
 )
 from services.providers.anthropic_cost import AnthropicCostProvider   # noqa: E402
@@ -67,7 +74,8 @@ from services.datetime_util import (                                  # noqa: E4
 )
 
 # **ui/styles.py は現行リポジトリに存在しない。** デスクトップGUI版が
-# リポジトリ分離で削除されたため (現行の ui/ には account_dialog.py しか無い)。
+# リポジトリ分離で削除されたため (現行の ui/ にあるのは account_dialog.py と
+# session_refresher.py の2つで、styles.py は無い)。
 # get_status_dot / is_limited はもともと services/usage_status.py の関数を
 # 再エクスポートしていただけなので、原本から直接同じ名前で束ねる。
 # scale_css / build_theme / get_progress_bar_style / get_status_color は
@@ -968,8 +976,19 @@ class TestChatGPTPastedAccessToken(unittest.TestCase):
         # (i18n 化で "全部コピー" ではなく英語の "Copy everything" になった)。
         self.assertIn("Copy everything", provider.manual_steps)
 
-        # アプリ内ブラウザで問題なくログインできる取得先には出さない
-        self.assertFalse(ClaudeProvider().has_manual_fallback)
+        # **資格情報が要る取得先は、全部これを持っていること。**
+        # 以前はアプリ内ブラウザでログインさせる道があり、この導線は
+        # そちらが使えない人のための逃げ道でした。その道を畳んだので、
+        # **いまはこれが唯一の道です。** 持っていない取得先があると、
+        # その取得先を選んだ利用者には、資格情報を手に入れる手立てが
+        # 画面のどこにもありません。
+        for provider in providers.all_providers():
+            if provider.auth_kind != AUTH_COOKIE:
+                continue
+            with self.subTest(provider=provider.id):
+                self.assertTrue(provider.has_manual_fallback,
+                                "取り方の案内が無い")
+                self.assertTrue(provider.manual_steps, "手順が空")
 
     def test_validate_credential_catches_common_paste_mistakes(self):
         provider = ChatGPTProvider()

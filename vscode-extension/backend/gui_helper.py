@@ -1,6 +1,19 @@
-"""ブラウザ画面が要る操作の実行係。
+"""ブラウザ画面が要る操作の実行係。**もう誰も起動しません。**
 
-cli.py から別プロセスとして起動されます。
+**1.7.0 で役目を終えました。** 拡張はアプリ内ブラウザでのログインをやめ、
+資格情報は利用者が普段のブラウザから取ってきて、拡張の画面のフォームへ
+貼るようになりました。cli.py にこのファイルを起こすコードはもうありません
+(subprocess も Popen も残っていません)。vsix にも入りません
+(vscode-extension/.vscodeignore を参照)。
+
+**このファイルは、いまの置き場所からは動きません。** 起動時の sys.path 解決
+(下の _root の決め方) は、隣に services/ があればそこを根と見なします。
+ビルドを1回でも走らせると backend/services/ ができるので根は backend/ に
+決まりますが、**ui/ はもうコピーされない**ため
+(build_vsix.py の _COPY_FILES)、ui.account_dialog の import で止まります。
+動かすならリポジトリ直下から起動してください。
+
+以下は、当時どう動いていたかの記録です。
 
 **なぜ別プロセスなのか。** Qt は自分のイベントループをメインスレッドで
 回す必要があります。cli.py のメインスレッドは標準入力を読み続けているので、
@@ -8,12 +21,13 @@ cli.py から別プロセスとして起動されます。
 バックエンドまで巻き込まれずに済みます。
 
     python gui_helper.py add        --result <path>
-    python gui_helper.py edit       --result <path> --id <account_id>
     python gui_helper.py relogin    --result <path> --id <account_id>
 
-**ここに来るのは、ログイン画面が要る操作だけです。** 削除はバックエンド
-(cli.py) の中で完結します。窓の要らない操作をここへ回すと、PySide6 が
-入っていない環境でそれまでできなくなります (実際にそうなっていました)。
+**ここに来るのは、ログイン画面が要る操作だけでした。** 削除と編集は
+バックエンド (cli.py) の中で完結します。窓の要らない操作をここへ回すと、
+PySide6 が入っていない環境でそれまでできなくなります — 削除も編集も追加も
+実際にそうなっていて、それを1つずつ剥がした先が、この経路そのものを畳む
+判断でした。
 
 **結果は --result で渡されたファイルへ書きます。標準出力は使いません。**
 QtWebEngine (Chromium) は Python の sys.stdout を経由せず OS のファイル
@@ -90,7 +104,10 @@ def preflight() -> str:
             "Python in use: {executable}\n\n"
             "Install it with:\n{command}\n\n"
             "PySide6 is not needed just to view and refresh usage. "
-            "To use a different Python, set aiUsageManager.guiPythonPath.",
+            # **この設定はもうありません** (1.7.0 で削除)。文言も
+            # 翻訳カタログから外れているので、英語のまま出ます。
+            # このファイル自体が到達不能なので、直す先もありません。
+            "PySide6 is not installed in this Python.",
             packages=packages, executable=sys.executable,
             command=f'"{sys.executable}" -m pip install {packages}',
         )
@@ -128,7 +145,7 @@ def log_step(message: str):
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "mode", choices=["add", "edit", "relogin", "silent_refresh"])
+        "mode", choices=["add", "relogin", "silent_refresh"])
     parser.add_argument("--result", required=True, help="結果を書き出す JSON のパス")
     parser.add_argument("--id", default="", help="対象アカウントの ID")
     return parser.parse_args()
@@ -354,23 +371,6 @@ def do_add(args, manager: ConfigManager, accounts: list) -> dict:
     return {"ok": True, "accountId": account.id, "changed": True}
 
 
-def do_edit(args, manager: ConfigManager, accounts: list) -> dict:
-    index = next((i for i, a in enumerate(accounts) if a.id == args.id), -1)
-    if index < 0:
-        return {"ok": False, "error": t("The account was not found.")}
-
-    dialog = AccountDialog(None, accounts[index])
-    show_in_front(dialog)
-    if dialog.exec() != QDialog.Accepted:
-        return {"ok": True, "cancelled": True}
-
-    accounts[index] = dialog.get_account_data()
-    if not manager.save(accounts, manager.settings):
-        return {"ok": False,
-                "error": t("The settings could not be saved. Check the log.")}
-    return {"ok": True, "accountId": accounts[index].id, "changed": True}
-
-
 def do_relogin(args, manager: ConfigManager, accounts: list) -> dict:
     """デスクトップ版の open_login_dialog と同じ手順で Cookie を取り直します。
 
@@ -468,7 +468,7 @@ def do_silent_refresh(args, manager: ConfigManager, accounts: list) -> dict:
             "changed": True}
 
 
-HANDLERS = {"add": do_add, "edit": do_edit, "relogin": do_relogin,
+HANDLERS = {"add": do_add, "relogin": do_relogin,
             "silent_refresh": do_silent_refresh}
 
 
@@ -477,9 +477,8 @@ def main():
     # PySide6 の import (このファイルの中ほど) で固まる事例が実測であるため、
     # この行が出ていなければ「Qt に届く前に止まった」、出ていれば
     # 「import は通って main まで来ている」と切り分けられます。
-    # どの Python で動いているかを一緒に出すのは、拡張の設定
-    # (aiUsageManager.guiPythonPath) で別の Python を向いていて、
-    # そちらに PySide6 が無い、という食い違いが一番多いためです。
+    # どの Python で動いているかを一緒に出すのは、起動に使った Python に
+    # PySide6 が無い、という食い違いが一番多いためです。
     log_step(f"起動しました: pid={os.getpid()} mode={_ARGS.mode} python={sys.executable}")
 
     setup_logging()

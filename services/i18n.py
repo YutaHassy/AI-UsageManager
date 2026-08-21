@@ -21,8 +21,8 @@ description などのクラス属性もそこで確定します。呼び忘れ�
 
   1. 環境変数 AI_USAGE_MANAGER_LANG
      拡張から起動されたときは backend.js が vscode.env.language を入れます。
-     cli.py は gui_helper.py を os.environ ごと渡して起動するので、
-     ログイン画面 (PySide6) にもそのまま伝わります。
+     **渡せるのは Python を起こすその瞬間だけです** (このモジュールは import
+     した時点で言語を確定させるため)。
   2. OS の言語 (手で動かしたときのため)
   3. 英語
 """
@@ -34,8 +34,8 @@ import os
 
 logger = logging.getLogger(__name__)
 
-# backend.js が渡してくる環境変数。名前は AI_USAGE_MANAGER_LOGLEVEL や
-# AI_USAGE_MANAGER_GUI_PYTHON と揃えてあります。
+# backend.js が渡してくる環境変数。名前は AI_USAGE_MANAGER_LOGLEVEL と
+# 揃えてあります。
 ENV_LANG = "AI_USAGE_MANAGER_LANG"
 
 _LOCALES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "locales")

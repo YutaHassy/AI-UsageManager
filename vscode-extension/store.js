@@ -10,7 +10,7 @@
 
 const vscode = require('vscode');
 
-const { ACCOUNT_OPERATIONS, t } = require('./i18n');
+const { t } = require('./i18n');
 
 /**
  * 取得の進み方。
@@ -108,21 +108,6 @@ class UsageStore {
          * @type {Promise<void>|undefined}
          */
         this.reloading = undefined;
-        /**
-         * ログイン画面など、別ウィンドウでの操作を待っている間の説明。
-         * @type {string|undefined}
-         */
-        this.guiBusyMessage = undefined;
-        /**
-         * 何回目の GUI 操作か。
-         *
-         * 中止したとき、待っていた操作の応答が返るより先に利用者が次の操作を
-         * 始められます。番号を持たずに「終わったら undefined を書く」だけに
-         * すると、遅れて返ってきた前の操作が、始まったばかりの操作の表示を
-         * 消してしまいます。自分の番号のときだけ消すために持ちます。
-         */
-        this.guiOperationSeq = 0;
-
         this._onDidChange = new vscode.EventEmitter();
         this.onDidChange = this._onDidChange.event;
 
@@ -159,16 +144,12 @@ class UsageStore {
         return this.refreshing;
     }
 
-    get guiBusy() {
-        return this.guiBusyMessage;
-    }
-
     /**
      * 顔ぶれが変わった可能性があるとき、消えたアカウントの結果を cache から捨てます。
      *
      * 残すと `entry()` や `worst()` が存在しないアカウントの古い結果を持ち出し、
-     * 件数や表示が合わなくなります。reload() と runGuiOperation()、
-     * deleteAccount() で同じ後始末が必要なので、ここへ切り出しました。
+     * 件数や表示が合わなくなります。reload() と deleteAccount() で同じ
+     * 後始末が必要なので、ここへ切り出しました。
      */
     pruneMissingAccounts() {
         const alive = new Set(this.accounts.map((a) => a.id));
@@ -180,101 +161,72 @@ class UsageStore {
     }
 
     /**
-     * ログイン画面を伴う操作を1つだけ走らせます。
+     * 登録内容を書き換えます。
      *
-     * **同時に2つ開かせないこと。** 同じ設定ファイルを2つのダイアログが
-     * 書き戻すことになり、後から閉じた方が先の変更を消します。
+     * **別ウィンドウは出しません。** バックエンドの中だけで終わります
+     * (backend/cli.py の update_account)。ここを PySide6 製のログイン画面へ
+     * 通していたために、あれが入っていない環境では編集すらできませんでした。
      *
-     * @param {string} message
-     * @param {() => Promise<import('./backend').Snapshot>} action
-     * @returns {Promise<void>}
+     * 尋ねるべき警告が出たときは**保存されず**、その文面が返ります。
+     * 呼び出し側が利用者に尋ね、confirmed を立てて呼び直してください。
+     *
+     * @param {import('./backend').AccountUpdate} changes
+     * @returns {Promise<string[]>} 尋ねるべき警告 (空配列なら保存済み)
      */
-    async runGuiOperation(message, action) {
-        if (this.guiBusyMessage) {
-            throw new Error(t('Another operation ({operation}) is in progress.',
-                { operation: this.guiBusyMessage }));
+    async updateAccount(changes) {
+        const result = await this.backend.updateAccount(changes);
+        if (result.confirm) {
+            // **保存されていないので、一覧も差し替えません。**
+            return result.confirm;
         }
-        const seq = ++this.guiOperationSeq;
-        this.guiBusyMessage = message;
+        this._snapshot = result;
+        // 取得に効く値を変えたなら、前回の結果はもう当てになりません。
+        // **名前だけ変えたときに捨てないこと** — 直後の画面が「未取得」に
+        // 戻り、変えた覚えのない表示が消えたように見えます。
+        if (changes.credential !== undefined || changes.provider !== undefined
+            || changes.extra !== undefined) {
+            this.cache.delete(changes.accountId);
+        }
         this._onDidChange.fire();
-        try {
-            this._snapshot = await action();
-            this.pruneMissingAccounts();
-        } finally {
-            // **自分より後に始まった操作の表示は消しません。** 中止したときは
-            // cancelGui() が先に解除するので、応答が遅れて返ってくる頃には
-            // 利用者が次の操作を始めていることがあります。ここで無条件に
-            // undefined を書くと、その新しい操作だけが「進行中ではない」ことに
-            // なり、画面のボタンが押せてしまいます。
-            if (this.guiOperationSeq === seq) {
-                this.guiBusyMessage = undefined;
-            }
-            this._onDidChange.fire();
-        }
+        return [];
     }
 
     /**
-     * 進行中のログイン画面を中止させます。
+     * アカウントを1件作ります。**ログイン画面は開きません。**
      *
-     * **通知を閉じるだけの中止にはしないこと。** 実際に子プロセスを終了させ
-     * なければ、固まったプロセスとバックエンド側の錠が残り、以後の操作が
-     * すべて弾かれます。終了させるのはバックエンドの仕事です
-     * (backend.cancelGui 参照)。
+     * **これが唯一の道です。** 窓を開いて作る道はもうありません。
      *
-     * @returns {Promise<{cancelled: boolean, message: string}>}
+     * @param {object} changes create_account に渡す内容
+     * @returns {Promise<{accountId?: string, confirm?: string[]}>}
      */
-    async cancelGui() {
-        try {
-            return await this.backend.cancelGui();
-        } finally {
-            // **待っている runGuiOperation の finally を当てにしません。**
-            // 中止が要る場面は「何かが詰まっている」場面そのもので、応答が
-            // 返ってこなければあの finally は永久に通りません。そうなると
-            // 追加・編集・再ログインが「別の操作が進行中です」で弾かれ続け、
-            // 復旧手段がウィンドウの再読み込みだけになります。二重に解除しても
-            // 害はありません (同じ undefined を書くだけ)。ダイアログが二重に
-            // 開くことは、バックエンド側の錠が引き続き防ぎます。
-            this.guiBusyMessage = undefined;
-            this._onDidChange.fire();
+    async createAccount(changes) {
+        const result = await this.backend.createAccount(changes);
+        if (result.confirm) {
+            // **作られていないので、一覧も差し替えません。**
+            return { confirm: result.confirm };
         }
+        this._snapshot = result;
+        this._onDidChange.fire();
+        return { accountId: result.accountId };
     }
 
-    // **guiBusyMessage には訳したものを入れます。** これは webview の案内文へ
-    // そのまま差し込まれる値で、向こう側は訳す手立てを持ちません。
-    // 原文 (キー) は i18n.ACCOUNT_OPERATIONS に1つだけ置いてあります。
-
-    addAccount() {
-        return this.runGuiOperation(
-            t(ACCOUNT_OPERATIONS.add), () => this.backend.addAccount());
-    }
-
-    /** @param {string} accountId */
-    editAccount(accountId) {
-        return this.runGuiOperation(
-            t(ACCOUNT_OPERATIONS.edit), () => this.backend.editAccount(accountId));
-    }
-
-    /** @param {string} accountId */
-    relogin(accountId) {
-        return this.runGuiOperation(t(ACCOUNT_OPERATIONS.relogin), async () => {
-            const snapshot = await this.backend.relogin(accountId);
-            // ログインし直した直後は、前回の失敗が残っていると赤いままになる
-            this.cache.delete(accountId);
-            return snapshot;
-        });
+    /**
+     * 選べる取得先の一覧を読みます。
+     *
+     * @param {string[]} [include] 一覧から取り下げたものも要るなら、その ID
+     * @returns {Promise<import('./backend').ProviderInfo[]>}
+     */
+    async listProviders(include = []) {
+        const result = await this.backend.listProviders(include);
+        return result.providers ?? [];
     }
 
     /**
      * アカウントを1件消します。
      *
-     * **runGuiOperation は通しません。** 削除に別ウィンドウは要らないので、
-     * バックエンドの中だけで終わります (backend/cli.py の do_delete_account)。
-     * ここを GUI 側の道に通していたために、PySide6 が入っていない環境では
-     * 削除まで「PySide6 を入れてください」で止まっていました。
-     *
-     * ログイン画面を開いている最中の削除は、バックエンドが断ります。
-     * あちらは開いた時点の一覧を閉じるときに書き戻すので、その間に消しても
-     * あとから上書きされて戻ってくるためです。
+     * **別ウィンドウは出しません。** バックエンドの中だけで終わります
+     * (backend/cli.py の do_delete_account)。ここを PySide6 製のログイン画面へ
+     * 通していたために、あれが入っていない環境では削除すらできませんでした。
      *
      * @param {string} accountId
      * @returns {Promise<void>}
@@ -282,6 +234,20 @@ class UsageStore {
     async deleteAccount(accountId) {
         this._snapshot = await this.backend.deleteAccount(accountId);
         this.pruneMissingAccounts();
+        this._onDidChange.fire();
+    }
+
+    /**
+     * 取得済みの結果を全部捨てます。
+     *
+     * **表示言語を変えたときに要ります。** 枠のラベルも状態の要約も
+     * エラー文も、訳したのはバックエンドです (cli.py が
+     * services/usage_status.py の annotate を通して返す)。こちらに
+     * 残っているのは前の言語で作られた文字列なので、捨てないと
+     * **画面の枠だけ新しい言語になり、中身は前の言語のまま**残ります。
+     */
+    forgetUsage() {
+        this.cache.clear();
         this._onDidChange.fire();
     }
 
@@ -358,7 +324,9 @@ class UsageStore {
         try {
             await running;
         } finally {
-            // 自分より後に始まったものの記録は消しません (runGuiOperation と同じ理由)。
+            // **自分より後に始まったものの記録は消しません。** 無条件に消すと、
+            // 遅れて終わった前の読み込みが、始まったばかりの読み込みの記録を
+            // 消して、二重に走らせてしまいます。
             if (this.reloading === running) {
                 this.reloading = undefined;
             }

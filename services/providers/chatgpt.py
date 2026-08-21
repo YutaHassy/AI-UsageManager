@@ -368,21 +368,23 @@ class ChatGPTProvider(UsageProvider):
     auth_kind = AUTH_COOKIE
     credential_label = "Cookie / accessToken"
     credential_hint = (
-        'Sign in with "Get cookies automatically".\n'
-        'If you cannot sign in there, use "Cannot sign in?" on the sign-in '
-        "window to paste an accessToken instead."
+        "Paste what you copied from your browser,\n"
+        "or an accessToken (eyJ...) on its own."
     )
 
-    # Google アカウントでログインしていると、アプリ内ブラウザからは
-    # サインインできません (Google が埋め込みブラウザを拒否する)。
-    # その場合の逃げ道。詳細は _resolve_access_token を参照。
+    # 普段のブラウザで取ってくる道。**これが唯一の道です。**
+    #
+    # 埋め込みブラウザでログインさせる作りは畳みました。Google アカウントで
+    # 作った ChatGPT アカウントは、そもそも埋め込み側からサインインできません
+    # (Google が拒否する)。詳細は base.UsageProvider.manual_url と
+    # _resolve_access_token を参照。
     manual_url = SESSION_URL
     manual_steps = (
-        "1. Use the button below to open your usual browser.\n"
-        "   (open it in a browser that is signed in to ChatGPT)\n"
+        "1. Use the button below to open ChatGPT in your usual browser.\n"
+        "   (the browser has to be signed in to ChatGPT)\n"
         "2. Copy everything you see (Ctrl+A then Ctrl+C).\n"
         "   You do not need to hunt for the token.\n"
-        '3. Paste it into the box below and press "Set".\n'
+        "3. Paste it into the box below and save.\n"
         "   Only the part that is needed is taken out and saved."
     )
 
@@ -653,7 +655,7 @@ class ChatGPTProvider(UsageProvider):
         if not (credential or "").strip():
             raise UsageError(
                 t('{credential} is not set. Set it from "Sign In Again".',
-                  credential=self.credential_label),
+                  credential=t(self.credential_label)),
                 auth_error=True,
             )
 

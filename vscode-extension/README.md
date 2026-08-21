@@ -14,9 +14,9 @@ The UI is available in English, 日本語, 한국어 and 简体中文.
 
 | Provider | What you see | How you authenticate |
 | --- | --- | --- |
-| Claude.ai | Pro / Max quotas: 5-hour, weekly, weekly Opus, weekly Sonnet | Sign-in window, or paste a `sessionKey` cookie |
-| ChatGPT | Plan quota windows (5-hour / daily / weekly) and add-on credits | Sign-in window, or paste a cookie |
-| Gemini | App quotas: current usage and the weekly limit | Cookie pasted by hand — see [Limitations](#limitations) |
+| Claude.ai | Pro / Max quotas: 5-hour, weekly, weekly Opus, weekly Sonnet | A `sessionKey` cookie from your browser |
+| ChatGPT | Plan quota windows (5-hour / daily / weekly) and add-on credits | A cookie or accessToken from your browser |
+| Gemini | App quotas: current usage and the weekly limit | A cookie from your browser |
 | Codex CLI | Rate limits: 5-hour / daily / weekly / monthly | Nothing. It reads the CLI's own local session records |
 | Antigravity (Gemini) | G1 credit balance | Reuses the gemini-cli sign-in state |
 | Anthropic API | This month's cost in USD, broken down by model | Admin API key |
@@ -38,35 +38,46 @@ refreshed stays registered but is skipped.
 pip install requests urllib3
 ```
 
-That is all the display side needs. If either package is missing, the extension
-tells you which Python it tried and gives you a ready-to-run `pip install` line
-for exactly that interpreter.
+**That is the whole list.** Nothing else is needed — not for viewing, not for
+refreshing, and not for adding or editing an account. If either package is
+missing, the extension tells you which Python it tried and gives you a
+ready-to-run `pip install` line for exactly that interpreter.
 
-### To add, edit or sign in again
+### How an account gets its credential
 
-Additionally **PySide6**:
+Adding and editing both happen **on one screen inside the usage tab**. Provider,
+name, credential and spending cap are all visible at once, and nothing opens a
+second window.
 
-```sh
-pip install PySide6 PySide6-Addons
-```
+The credential itself comes from **your own browser**:
 
-These two are only used when a sign-in window is opened. Viewing, refreshing
-and **deleting an account** never touch them.
+1. Press `Add Account`. Choose the provider first — the rest of the form
+   changes to match it.
+2. The form shows how to get that provider's credential, and a button that
+   opens the provider's page **in your default browser**. That browser is
+   usually signed in already.
+3. Follow the steps, copy what they tell you to copy, and paste it into the
+   box on the form.
+4. Save.
 
-If you would rather not put PySide6 into the same environment as `requests`,
-point `aiUsageManager.guiPythonPath` at a second interpreter that has it.
+**Paste the whole thing.** For the cookie providers the steps end in "Copy as
+cURL", which puts a long command on your clipboard; the extension picks out the
+part it needs and discards the rest. You do not have to find the cookie
+yourself, and pasting the wrong row is recoverable — save it and you are told
+what is missing.
 
-### About the sign-in window
+Earlier versions signed you in through a Chromium window bundled with the
+extension, which is why `PySide6` used to be in this list. That window is gone.
+Two reasons: it made anyone who only wanted to paste an API key install a
+browser engine, and some providers refuse to sign in from an embedded browser
+at all — a protection that exists because whoever embeds the browser can watch
+you type your password. Using the browser you already trust is the honest way
+round, and it is usually signed in already.
 
-Signing in happens in **a separate window**, outside VS Code — a Chromium-based
-browser window driven by PySide6. A webview inside VS Code cannot collect
-another site's cookies, so the extension launches the same sign-in window the
-desktop build uses instead of pretending to do it in-editor.
-
-When you press a button that needs it, VS Code shows a progress notification
-telling you to continue in the other window. **If the window never appears, the
-× on that notification cancels.** Cancelling terminates the sign-in process on
-the backend, so you can carry on without reloading the window.
+**One thing was lost with it.** Claude sessions used to be renewed silently in
+the background using that window's profile. Now an expired Claude session is
+reported to you and you paste a fresh credential. ChatGPT and Gemini are
+unaffected — those are renewed by the provider.
 
 ### How Python is found
 
@@ -100,11 +111,12 @@ All commands are under the `AI-UsageManager` category in the Command Palette.
 | --- | --- |
 | `Open Usage` | Opens the usage tab (so does clicking the status bar) |
 | `Refresh All` | Refreshes every account that can be refreshed |
-| `Add Account` | Opens the sign-in window and registers a new account |
-| `Edit Account` | Changes a registered account's details |
-| `Sign In Again` | Opens the sign-in window and takes fresh cookies |
+| `Add Account` | Opens the form for a new account |
+| `Edit Account` | Opens the form for a registered account |
+| `Sign In Again` | Same form, for pasting a fresh credential when one expires |
 | `Delete Account` | Deletes the account and its saved sign-in state |
 | `Open Settings` | Opens the Settings UI filtered to this extension |
+| `Open Settings File (config.json)` | Opens the backend's own config file, for the settings that live only there (`aoai_allowed_hosts`) |
 | `Show Log` | Shows the backend log in an output channel |
 | `Restart Backend` | Recreates the Python process |
 | `Language` | Picks the display language |
@@ -113,15 +125,16 @@ All commands are under the `AI-UsageManager` category in the Command Palette.
 | `Import Proxy From Environment Variables` | Fills the proxy host/port settings from `HTTP_PROXY` / `HTTPS_PROXY` |
 
 Add, edit, delete and sign-in-again are also available as buttons in the view.
+Add, edit and sign-in-again all open the same form; the last is just the name
+the button takes when a credential has expired.
 
 ## Settings
 
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `aiUsageManager.pythonPath` | `""` | The Python that runs the backend. Empty means auto-detect |
-| `aiUsageManager.guiPythonPath` | `""` | The Python that runs the sign-in window (needs PySide6). Empty means the same one as above |
 | `aiUsageManager.language` | `auto` | Display language: `auto`, `en`, `ja`, `ko`, `zh-cn` |
-| `aiUsageManager.autoRefreshMinutes` | `0` | Refresh interval in minutes (`0`, `1`, `5`, `10`, `30`, `60`). `0` disables it |
+| `aiUsageManager.autoRefreshMinutes` | `1` | Refresh interval in minutes (`0`, `1`, `5`, `10`, `30`, `60`). `0` disables it |
 | `aiUsageManager.refreshOnOpen` | `true` | Refresh once when the view is opened |
 | `aiUsageManager.showStatusBar` | `true` | Show the account closest to its limit in the status bar |
 | `aiUsageManager.proxy.mode` | `system` | How to reach the network: `system`, `manual`, `none` |
@@ -186,10 +199,10 @@ expects, the extension reports an error rather than claiming 0% — telling you
 that you have plenty of headroom left when it no longer knows is the one failure
 mode worth ruling out.
 
-**Gemini needs its cookie pasted by hand.** Google refuses sign-in from embedded
-browsers, so the built-in sign-in window cannot be used for it. The dialog walks
-you through copying the cookie out of your normal browser's developer tools
-instead.
+**Google refusing to sign in from an embedded browser is why there is no
+embedded browser.** Gemini was never able to use one, and the workaround for it
+— copy the cookie out of your normal browser's developer tools — turned out to
+be the better path for every provider. It is now the only one.
 
 **Azure OpenAI means an organization-internal gateway**, not Azure Cost
 Management. It reads a `/bill/billing` endpoint, and the endpoint host must sit
@@ -229,9 +242,9 @@ VS Code の中で確認します。取得は利用者自身のログイン状態
 
 | 取得先 | 見えるもの | 認証 |
 | --- | --- | --- |
-| Claude.ai | Pro / Max の枠 (5時間・週間・週間 Opus・週間 Sonnet) | ログイン画面、または `sessionKey` の貼り付け |
-| ChatGPT | プランの枠 (5時間 / 日次 / 週間) と追加クレジット | ログイン画面、または Cookie の貼り付け |
-| Gemini | アプリの枠 (現在の使用量と週間上限) | Cookie の手貼り (後述) |
+| Claude.ai | Pro / Max の枠 (5時間・週間・週間 Opus・週間 Sonnet) | ブラウザから取った `sessionKey` |
+| ChatGPT | プランの枠 (5時間 / 日次 / 週間) と追加クレジット | ブラウザから取った Cookie または accessToken |
+| Gemini | アプリの枠 (現在の使用量と週間上限) | ブラウザから取った Cookie |
 | Codex CLI | レート上限 (5時間 / 日次 / 週間 / 月次) | 不要。CLI 自身の記録ファイルを読むだけ |
 | Antigravity (Gemini) | G1 クレジット残高 | gemini-cli のログイン状態を利用 |
 | Anthropic API | 今月の課金額 (USD) をモデル別に | Admin API キー |
@@ -242,30 +255,48 @@ VS Code の中で確認します。取得は利用者自身のログイン状態
 
 ### 必要なもの
 
-表示と更新だけなら **Python 3.9 以降**と `requests` / `urllib3`:
+**Python 3.9 以降**と `requests` / `urllib3`:
 
 ```sh
 pip install requests urllib3
 ```
 
-アカウントの追加・編集・再ログインを行う場合は、加えて **PySide6**:
+**これで全部です。** 表示・更新はもちろん、アカウントの追加も編集も、他に要る
+ものはありません。どちらかが入っていなければ、どの Python を試したかと、
+**その Python 用の** `pip install` の1行が出ます。
 
-```sh
-pip install PySide6 PySide6-Addons
-```
+### 資格情報の取り方
 
-この2つはログイン画面を開いたときにだけ使われます。表示・更新と**アカウントの
-削除**では使いません。`requests` の環境と分けたい場合は、
-`aiUsageManager.guiPythonPath` に PySide6 入りの Python を指定してください。
+追加も編集も、**使用状況のタブの中の1画面**で行います。取得先・名前・
+資格情報・上限金額が一度に見え、別のウィンドウは出ません。
 
-### ログイン画面について
+資格情報そのものは、**普段お使いのブラウザ**から取ってきます。
 
-ログインは **VS Code とは別のウィンドウ** (PySide6 の Chromium ベースの画面) で
-行います。Webview の中では他社サイトの Cookie を回収できないためです。
+1. 「アカウントを追加」を押します。最初に取得先を選ぶと、以降の欄がその
+   取得先に合わせて入れ替わります。
+2. その取得先の取り方の手順と、**既定のブラウザでそのページを開く**ボタンが
+   出ます。普段のブラウザなら、たいていは既にログイン済みです。
+3. 手順どおりにコピーして、フォームの入力欄に貼り付けます。
+4. 保存します。
 
-**別ウィンドウが出てこないときは、進行中の通知の × で中止できます。** 中止すると
-バックエンドがログイン画面のプロセスを終了させるので、VS Code を再読み込みせずに
-次の操作へ進めます。
+**丸ごと貼ってください。** Cookie を使う取得先では、手順の最後が
+「Copy as cURL」になっています。クリップボードには長いコマンドが入りますが、
+必要な部分だけを拡張が取り出し、残りは捨てます。**どこが Cookie かを自分で
+探す必要はありません。** 違う行を選んでしまっても、保存すれば何が足りないかを
+教えます。
+
+以前の版は、拡張に同梱した Chromium の画面でログインさせていました
+(`PySide6` がここに並んでいたのはそのためです)。**その画面は無くなりました。**
+理由は2つあります。API キーを貼るだけの人にまでブラウザエンジンの導入を
+強いていたこと。そして、埋め込みブラウザからのログインを拒む取得先がある
+こと — それは埋め込んだ側がパスワード入力を覗けるという理由で存在する保護
+なので、迂回しようとするのは筋が悪い。**普段お使いのブラウザで取ってくる**
+ほうが正しく、そちらは大抵ログイン済みでもあります。
+
+**1つだけ失われたものがあります。** Claude のセッションは、以前はその画面の
+プロファイルを使って裏で黙って更新していました。今後は期限切れがそのまま
+通知され、新しい資格情報を貼り直すことになります。ChatGPT と Gemini は
+取得先の側で延長されるため、影響はありません。
 
 ### Python の探し方
 
@@ -295,11 +326,12 @@ pip install PySide6 PySide6-Addons
 | --- | --- |
 | `Open Usage` | 使用状況の画面を開きます |
 | `Refresh All` | 取得できるアカウントをすべて更新します |
-| `Add Account` | ログイン画面を開いて新しいアカウントを登録します |
-| `Edit Account` | 登録内容を変更します |
-| `Sign In Again` | ログイン画面を開いて Cookie を取り直します |
+| `Add Account` | 新しいアカウントのフォームを開きます |
+| `Edit Account` | 登録済みアカウントのフォームを開きます |
+| `Sign In Again` | 同じフォーム。期限切れの資格情報を貼り直すときの名前です |
 | `Delete Account` | アカウントと保存されたログイン状態を消します |
 | `Open Settings` | この拡張の設定だけに絞って設定画面を開きます |
+| `Open Settings File (config.json)` | バックエンドの設定ファイルをエディタで開きます。そこにしか無い項目 (`aoai_allowed_hosts`) を直すためのものです |
 | `Show Log` | バックエンドのログを出力チャンネルに表示します |
 | `Restart Backend` | Python プロセスを作り直します |
 | `Language` | 表示言語を選びます |
@@ -314,9 +346,8 @@ pip install PySide6 PySide6-Addons
 | 設定 | 既定 | 内容 |
 | --- | --- | --- |
 | `aiUsageManager.pythonPath` | `""` | バックエンドを動かす Python。空欄で自動検出 |
-| `aiUsageManager.guiPythonPath` | `""` | ログイン画面 (PySide6) を動かす Python。空欄なら上と同じ |
 | `aiUsageManager.language` | `auto` | 表示言語 (`auto` / `en` / `ja` / `ko` / `zh-cn`) |
-| `aiUsageManager.autoRefreshMinutes` | `0` | 自動更新の間隔 (分)。`0` / `1` / `5` / `10` / `30` / `60`。`0` で無効 |
+| `aiUsageManager.autoRefreshMinutes` | `1` | 自動更新の間隔 (分)。`0` / `1` / `5` / `10` / `30` / `60`。`0` で無効 |
 | `aiUsageManager.refreshOnOpen` | `true` | 画面を開いたときに1回更新する |
 | `aiUsageManager.showStatusBar` | `true` | ステータスバーに最逼迫アカウントを出す |
 | `aiUsageManager.proxy.mode` | `system` | ネットワークへの接続方法 (`system` / `manual` / `none`) |
@@ -376,9 +407,10 @@ Webview は DevTools で中身を覗ける実行環境なので、そこへ Cook
 なくなったときは、0% と偽らずエラーとして出します** — 余裕があると誤解させるのが
 最も避けたい壊れ方だからです。
 
-**Gemini は Cookie の手貼りが必要です。** Google が埋め込みブラウザからのサイン
-インを拒否するため、内蔵のログイン画面は使えません。代わりに、普段のブラウザの
-開発者ツールから Cookie を取り出す手順が画面に出ます。
+**Google が埋め込みブラウザからのサインインを拒否することが、埋め込み
+ブラウザを持たない理由です。** Gemini では元から使えず、その回避策 —
+普段のブラウザの開発者ツールから Cookie を取り出す — が、結果としてどの
+取得先にとってもよい道でした。いまはそれが唯一の道です。
 
 **Azure OpenAI は社内ゲートウェイ向けです** (Azure Cost Management ではありません)。
 `/bill/billing` を読む作りで、エンドポイントのホストはその組織のドメイン内である

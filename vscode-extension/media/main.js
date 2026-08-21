@@ -57,7 +57,7 @@
 
     /** @type {any} */
     let state = {
-        accounts: [], entries: {}, fetchable: [], refreshing: false, guiBusy: null,
+        accounts: [], entries: {}, fetchable: [], refreshing: false,
         configPath: '', loadError: null, encryptionAvailable: true,
         // 一覧が1度でも届いたか。**「アカウントが0件」と「まだ届いていない」を
         // 区別するために要ります。** 混同すると、開いた直後の一瞬だけ
@@ -74,8 +74,6 @@
     const el = {
         content: /** @type {HTMLElement} */ (document.getElementById('content')),
         host: /** @type {HTMLElement} */ (document.getElementById('panel-host')),
-        banner: /** @type {HTMLElement} */ (document.getElementById('banner')),
-        bannerText: /** @type {HTMLElement} */ (document.getElementById('banner-text')),
         refresh: /** @type {HTMLButtonElement} */ (document.getElementById('refresh')),
         progress: /** @type {HTMLElement} */ (document.getElementById('progress')),
         status: /** @type {HTMLElement} */ (document.getElementById('status')),
@@ -334,10 +332,7 @@
         return list;
     }
 
-    /**
-     * 操作ボタン。ログイン画面を伴う操作が走っている間は必ず止めます。
-     * 2つ開くと、同じ設定ファイルを両方が書き戻して片方の変更が消えます。
-     */
+    /** 操作ボタン。 */
     function makeButton(className, onClick) {
         const button = /** @type {HTMLButtonElement} */ (make('button', className, ''));
         button.type = 'button';
@@ -347,10 +342,7 @@
 
     function updateButton(button, label, tooltip) {
         setText(button, label);
-        button.title = state.guiBusy
-            ? t('{operation} is in progress', { operation: state.guiBusy })
-            : tooltip;
-        button.disabled = Boolean(state.guiBusy);
+        button.title = tooltip;
     }
 
     // ---------------- サマリー ----------------
@@ -452,7 +444,7 @@
             : t('Loading...'));
         setHidden(view.actions, !state.loaded);
         updateButton(view.addButton, t('＋ Add'),
-            t('Opens the sign-in window to register an account'));
+            t('Opens the form for registering an account'));
     }
 
     // ---------------- 詳細 ----------------
@@ -591,11 +583,14 @@
                 ? t('The credential has expired')
                 : t('Could not fetch usage'));
             setText(view.errorBody, entry.error || '');
+            // **どこで何をすればよいかを書きます。** 以前はここが
+            // 「別ウィンドウのログイン画面が開きます」と案内していました。
+            // その窓はもうありません。取り方の手順は編集の画面に出るので、
+            // 行き先はどの取得先でもそこです。
             const note = !entry.authError ? ''
-                : account.canRelogin
-                    ? t('Press "🔑 Sign in again" below to open the sign-in window.')
-                    : t('Get a new {credential} and set it from "Edit".',
-                        { credential: account.credentialLabel });
+                : t('Press "🔑 Sign in again" below. '
+                    + 'The form shows how to get a new {credential}.',
+                    { credential: account.credentialLabel });
             setText(view.errorHint, note);
             setHidden(view.errorHint, !note);
         }
@@ -625,12 +620,16 @@
         setText(view.status, t('Status: {dot} {note}',
             { dot: info.dot, note: info.note }));
         updateButton(view.editButton, t('Edit'),
-            t('Change the registered details (you can open the sign-in window too)'));
-        // ブラウザでログインする取得先だけの機能。API キー方式の取得先に
-        // 出すと、押しても何も起きないボタンになる。
-        setHidden(view.reloginButton, !account.canRelogin);
+            t('Change the registered details'));
+        // **資格情報が要る取得先すべてに出します。** 以前は
+        // 「ブラウザでログインする取得先」だけに絞っていました。押した先が
+        // 別ウィンドウのログイン画面で、API キー方式では開いても何もできな
+        // かったためです。いまの行き先は編集のフォームなので、貼り直したい
+        // 人には、どの取得先でも意味があります。**コマンドパレット側の
+        // 絞り込みと揃えること** (extension.js の relogin)。
+        setHidden(view.reloginButton, !account.needsCredential);
         updateButton(view.reloginButton, t('🔑 Sign in again'),
-            t('Opens the sign-in window to get fresh cookies'));
+            t('Opens the form for pasting a fresh credential'));
         updateButton(view.enableButton,
             account.enabled ? t('Disable') : t('Enable'),
             account.enabled
@@ -643,7 +642,353 @@
     // ---------------- 全体 ----------------
 
     /** 作った画面を持ち回す。作り直すのは顔ぶれが変わったときだけ。 */
-    const views = { summary: null, detail: null, mode: null };
+    // ---------------- 追加・編集のフォーム ----------------
+    //
+    // **1画面に全部出します。** ここは以前、項目を1つずつ選ばせる形
+    // (QuickPick) でした。窓が要らないという点では正しかったのですが、
+    // 「いま何が設定されているのか」が一望できず、直すたびにメニューへ
+    // 戻ることになりました。登録内容は互いに関係するもの (取得先が決まって
+    // 初めて資格情報の意味が決まる) なので、並べて見せるほうが分かります。
+    //
+    // **資格情報は、こちらへは送られてきません。** 保存済みの値を webview へ
+    // 渡さないのは元からの約束です (cli.py の account_payload を参照)。
+    // 欄は常に空で開き、入力されたときだけ送ります。空のまま保存すれば
+    // 前の値が残ります。
+    //
+    // **入力中の値は DOM が持ちます。** state は取得のたびに届くので、
+    // そこへ入力値を載せると、自動更新が走った瞬間に打ちかけの文字が
+    // 消えます。値を流し込むのはフォームを開いた1回だけ (form.token が
+    // 変わったとき) で、あとは触りません。
+
+    function makeField(labelText, control) {
+        const row = make('div', 'form-row');
+        const label = make('label', 'form-label', labelText);
+        const id = 'f-' + Math.random().toString(36).slice(2, 9);
+        control.id = id;
+        label.setAttribute('for', id);
+        row.appendChild(label);
+        row.appendChild(control);
+        const hint = make('div', 'form-hint', '');
+        // **説明は入力欄に結び付けます。** 読み上げで使う人には、離れた場所に
+        // 置かれた文は入力欄と無関係な位置で読まれます。ここに出るのは
+        // 「すでに保存されています。空のままにすれば残ります」という、
+        // この画面でいちばん誤解の起きる説明です。
+        hint.id = id + '-hint';
+        control.setAttribute('aria-describedby', hint.id);
+        row.appendChild(hint);
+        return { row, label, control, hint };
+    }
+
+    function makeForm() {
+        const root = make('div', 'form');
+
+        const title = make('h2', 'form-title', '');
+        root.appendChild(title);
+
+        // 取得先。**最初に決めます。** これで他の欄の意味が決まります。
+        const providerSelect = /** @type {HTMLSelectElement} */
+            (make('select', 'form-control'));
+        const providerField = makeField(t('Provider'), providerSelect);
+        root.appendChild(providerField.row);
+
+        const nameInput = /** @type {HTMLInputElement} */
+            (make('input', 'form-control'));
+        nameInput.type = 'text';
+        const nameField = makeField(t('Name'), nameInput);
+        root.appendChild(nameField.row);
+
+        const extraInput = /** @type {HTMLInputElement} */
+            (make('input', 'form-control'));
+        extraInput.type = 'text';
+        const extraField = makeField('', extraInput);
+        root.appendChild(extraField.row);
+
+        const budgetInput = /** @type {HTMLInputElement} */
+            (make('input', 'form-control'));
+        budgetInput.type = 'text';
+        // 携帯の数字キーボードは出しますが、**入力は文字のまま扱います。**
+        // type="number" にすると、数値として読めない文字 (「1,000」、全角の
+        // 数字) を打ったときに value が空文字になり、打った内容が画面に
+        // 見えているのに 0 が保存されます。判定は cli.py に任せます。
+        budgetInput.inputMode = 'decimal';
+        const budgetField = makeField('', budgetInput);
+        root.appendChild(budgetField.row);
+
+        // 資格情報。**普段のブラウザで取ってきて、ここへ貼ります。**
+        const credentialArea = /** @type {HTMLTextAreaElement} */
+            (make('textarea', 'form-control form-credential'));
+        credentialArea.rows = 3;
+        credentialArea.spellcheck = false;
+        const credentialField = makeField('', credentialArea);
+        root.appendChild(credentialField.row);
+
+        // 取り方の手順。取得先が持っているものをそのまま出します
+        // (どこを開いて何を押すかは取得先の事情で、この画面が知って
+        // いてよいことではありません)。
+        const manualBox = make('div', 'form-manual');
+        const manualSteps = make('pre', 'form-steps', '');
+        const manualOpen = makeButton('ghost', () => {
+            const provider = currentFormProvider();
+            if (provider && provider.manualUrl) {
+                vscode.postMessage({ type: 'openManual', url: provider.manualUrl });
+            }
+        });
+        manualBox.appendChild(manualOpen);
+        manualBox.appendChild(manualSteps);
+        credentialField.row.appendChild(manualBox);
+
+        const enabledInput = /** @type {HTMLInputElement} */
+            (make('input', 'form-check'));
+        enabledInput.type = 'checkbox';
+        const enabledRow = make('div', 'form-row form-row-check');
+        const enabledLabel = make('label', 'form-label-inline', t('Enabled'));
+        const enabledId = 'f-enabled';
+        enabledInput.id = enabledId;
+        enabledLabel.setAttribute('for', enabledId);
+        enabledRow.appendChild(enabledInput);
+        enabledRow.appendChild(enabledLabel);
+        root.appendChild(enabledRow);
+
+        // 保存できない理由 / 尋ねられている確認。
+        const notice = make('div', 'form-notice');
+        // **押した先で何が起きたかを、その場で知らせます。** 保存に失敗しても
+        // フォーカスはボタンに残るので、これが無いと読み上げでは何も起きて
+        // いないように見えます。
+        notice.setAttribute('role', 'alert');
+        const noticeText = make('div', 'form-notice-text', '');
+        const noticeActions = make('div', 'actions');
+        const confirmButton = makeButton('primary', () => submitForm(true));
+        noticeActions.appendChild(confirmButton);
+        notice.appendChild(noticeText);
+        notice.appendChild(noticeActions);
+        root.appendChild(notice);
+
+        const footer = make('div', 'form-footer');
+        const saveButton = makeButton('primary', () => submitForm(false));
+        const cancelButton = makeButton('ghost',
+            () => vscode.postMessage({ type: 'cancelForm' }));
+        footer.appendChild(saveButton);
+        footer.appendChild(cancelButton);
+        root.appendChild(footer);
+
+        providerSelect.addEventListener('change', () => {
+            // 取得先が変われば、出す欄も入力例も変わります。
+            applyFormProvider(views.form);
+        });
+
+        // **Esc で閉じられるようにします。** 一覧の行はキーボードだけで
+        // 操作できるようにしてあるのに (makeSummaryRow)、この画面だけ
+        // 取消しがマウス専用では揃いません。
+        root.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && !cancelButton.disabled) {
+                event.preventDefault();
+                vscode.postMessage({ type: 'cancelForm' });
+            }
+        });
+
+        return {
+            root, title, providerSelect, providerField, nameInput, nameField,
+            extraInput, extraField, budgetInput, budgetField,
+            credentialArea, credentialField, manualBox, manualSteps, manualOpen,
+            enabledInput, enabledRow, enabledLabel,
+            notice, noticeText, confirmButton, saveButton, cancelButton,
+            // どのフォームを描いているか。**これが変わったときだけ値を流し込みます。**
+            token: null,
+            // いま欄に入っている値が、どの取得先のものか。**取得先を変えたら
+            // 入れ替えるために持ちます** (applyFormProvider を参照)。
+            appliedProvider: null,
+        };
+    }
+
+    /** フォームの取得先一覧。**必ず配列を返します。** */
+    function formProviders() {
+        const form = state.form;
+        return form && Array.isArray(form.providers) ? form.providers : [];
+    }
+
+    /** いま選ばれている取得先の情報 (引けなければ null)。 */
+    function currentFormProvider() {
+        const view = views.form;
+        if (!view) { return null; }
+        const id = view.providerSelect.value;
+        for (const provider of formProviders()) {
+            if (provider.id === id) { return provider; }
+        }
+        return null;
+    }
+
+    /**
+     * 取得先に合わせて、出す欄と文言を入れ替えます。
+     *
+     * **値も入れ替えます。** ラベルだけ差し替えて中身を残すと、前の取得先の
+     * 値が次の取得先のものとして保存されます。上限金額なら JPY の 10000 が
+     * USD の 10000 になり (桁が2つ違います)、しかも金額に書式の検証は無いので
+     * **誰にも気づかれません。** 資格情報も同じで、Claude の Cookie が
+     * Azure の API キーとして残ると、一覧では「設定済み」に見えるのに取得は
+     * 必ず失敗します。
+     */
+    function applyFormProvider(view) {
+        if (!view) { return; }
+        const provider = currentFormProvider();
+        if (!provider) {
+            // 一覧に無い取得先が選ばれている (設定ファイルを手で書き換えた等)。
+            // **欄を消しません。** 消すと、直す手立てがその場から無くなります。
+            // ラベルだけ既定の語に戻して、判定はバックエンドに任せます
+            // (保存を押せば「知らない取得先です」と返ります)。
+            setText(view.extraField.label, t('Provider'));
+            setText(view.credentialField.label, t('Provider'));
+            setHidden(view.manualBox, true);
+            setText(view.credentialField.hint, '');
+            return;
+        }
+
+        // **開いた直後は入れ替えません。** そこに入っているのは、まさにこの
+        // 取得先の値です。
+        if (view.appliedProvider !== null
+                && view.appliedProvider !== provider.id) {
+            view.extraInput.value = '';
+            view.budgetInput.value = provider.supportsBudget
+                ? String(provider.defaultBudget || '') : '';
+            view.credentialArea.value = '';
+        }
+        view.appliedProvider = provider.id;
+
+        setHidden(view.extraField.row, !provider.usesExtraField);
+        setText(view.extraField.label, provider.extraLabel || '');
+        view.extraInput.placeholder = provider.extraHint || '';
+
+        setHidden(view.budgetField.row, !provider.supportsBudget);
+        setText(view.budgetField.label, provider.currency
+            ? t('Spending cap ({currency})', { currency: provider.currency })
+            : t('Spending cap'));
+
+        setHidden(view.credentialField.row, !provider.needsCredential);
+        setText(view.credentialField.label, provider.credentialLabel || '');
+        view.credentialArea.placeholder = provider.credentialHint || '';
+
+        // 手順を持っている取得先だけ、開くボタンと手順を出します。
+        setHidden(view.manualBox, !provider.manualUrl);
+        setText(view.manualOpen, t('Open {provider} in your browser',
+            { provider: provider.label }));
+        setText(view.manualSteps, provider.manualSteps || '');
+
+        // 「すでに保存されています」と言えるのは、**開いたときの取得先の
+        // ままでいる**ときだけです。取得先を変えたなら、保存されているものは
+        // もうこの取得先のものではありません (cli.py の update_account が、
+        // 取得先を変えた保存では資格情報を求め直します)。
+        const form = state.form;
+        const kept = form && form.mode === 'edit' && form.hasCredential
+            && form.values && form.values.provider === provider.id;
+        setText(view.credentialField.hint, kept
+            ? t('One is already saved. Leave this empty to keep it as it is.')
+            : '');
+    }
+
+    function updateForm(view, form) {
+        // **値を流し込むのは開いた1回だけ。** 毎回入れ直すと、打っている
+        // 最中に自動更新が走った瞬間、入力が消えます。
+        if (view.token !== form.token) {
+            view.token = form.token;
+            // **壊れた形で届いても、この画面が使えなくなるだけで済ませます。**
+            // ここで例外を投げると message の受け口の外まで抜け、以後 state が
+            // 届いても描き直されません (画面全体が固まります)。
+            const list = Array.isArray(form.providers) ? form.providers : [];
+            const values = form.values || {};
+
+            view.providerSelect.replaceChildren();
+            for (const provider of list) {
+                const option = make('option', '', provider.label);
+                option.value = provider.id;
+                view.providerSelect.appendChild(option);
+            }
+            view.providerSelect.value = values.provider || '';
+            // 取得先を変えると資格情報の意味が変わるので、既存アカウントの
+            // 取得先はそのまま選べるようにしてあります (取り下げたものを
+            // 使っていても、その項目は一覧に入っています)。
+
+            view.nameInput.value = values.name || '';
+            view.extraInput.value = values.extra || '';
+            view.budgetInput.value = values.budget ? String(values.budget) : '';
+            view.credentialArea.value = '';
+            view.enabledInput.checked = values.enabled !== false;
+            // **いま入っている値が、どの取得先のものか。** これを先に立てて
+            // おかないと、開いた直後の applyFormProvider が「取得先が変わった」
+            // と判断して、読み込んだばかりの値を消します。
+            view.appliedProvider = values.provider || null;
+
+            setText(view.title, form.mode === 'add'
+                ? t('Add Account') : t('Edit Account'));
+            setText(view.saveButton, form.mode === 'add' ? t('Add') : t('Save'));
+            setText(view.cancelButton, t('Cancel'));
+            setText(view.confirmButton, t('Save anyway'));
+            setText(view.nameField.hint, t('The name shown in the list'));
+            applyFormProvider(view);
+            view.nameInput.focus();
+        }
+
+        // ここから下は、届くたびに反映してよいもの。
+        const busy = Boolean(form.busy);
+        view.saveButton.disabled = busy;
+        view.cancelButton.disabled = busy;
+        view.providerSelect.disabled = busy;
+        // **確認のボタンも止めます。** ここが抜けていると、確認が出ている
+        // 状態で素早く2回押せてしまい、追加なら同じアカウントが2件できます。
+        view.confirmButton.disabled = busy;
+
+        const confirm = form.confirm && form.confirm.length ? form.confirm : null;
+        const message = form.error || (confirm ? confirm.join('\n\n') : '');
+        setHidden(view.notice, !message);
+        setText(view.noticeText, message);
+        // 確認は「承知のうえで保存する」を押せば通せます。保存できない理由
+        // (名前が空、など) は押しても通らないので、ボタンを出しません。
+        setHidden(view.confirmButton, !confirm);
+        view.notice.classList.toggle('is-error', Boolean(form.error));
+    }
+
+    /** 入力された内容を送ります。 */
+    function submitForm(confirmed) {
+        const view = views.form;
+        const form = state.form;
+        if (!view || !form) { return; }
+        // **押した直後にもう一度押されても、送るのは1回だけ。** disabled は
+        // 応答が返ってくるまで立たないので、その往復の間に窓が開きます。
+        if (form.busy) { return; }
+
+        const values = {
+            provider: view.providerSelect.value,
+            name: view.nameInput.value,
+            enabled: view.enabledInput.checked,
+        };
+        // **画面に出ている欄だけを送ります。** 取得先が引けないときでも
+        // 送るのをやめてはいけません。押しても何も起きないボタンになり、
+        // 直す手立てがその場から無くなります。載せなかったキーは「触らない」
+        // という意味なので、隠れている欄は既定へ戻されません
+        // (cli.py の update_account)。
+        if (!view.extraField.row.classList.contains('hidden')) {
+            values.extra = view.extraInput.value;
+        }
+        if (!view.budgetField.row.classList.contains('hidden')) {
+            // **打った文字をそのまま渡します。** 数値へ直すのはここでは
+            // ありません。空欄だけが 0 (上限なし) で、それ以外の
+            // 「数値として読めないもの」は cli.py が理由を返します。
+            const typed = view.budgetInput.value.trim();
+            values.budget = typed === '' ? 0 : typed;
+        }
+        // **空なら送りません。** 送れば「空にしてください」という指示に
+        // なり、保存済みの資格情報が消えます (cli.py の update_account)。
+        const credential = view.credentialArea.value.trim();
+        if (credential) { values.credential = credential; }
+
+        vscode.postMessage({
+            type: 'saveAccount',
+            mode: form.mode,
+            accountId: form.accountId,
+            values: values,
+            confirmed: Boolean(confirmed),
+        });
+    }
+
+    const views = { summary: null, detail: null, form: null, mode: null };
 
     function currentAccount() {
         if (!selectedId) { return null; }
@@ -666,11 +1011,26 @@
             persist();
         }
         const account = currentAccount();
-        const mode = account ? 'detail' : 'summary';
+        // フォームを開いている間は、それを最優先で出します。**入力の途中で
+        // 自動更新が走っても画面が切り替わってはいけません。**
+        const mode = state.form ? 'form' : (account ? 'detail' : 'summary');
 
-        // 器を入れ替えるのは、サマリーと詳細を行き来したときだけ。
+        // 器を入れ替えるのは、行き来したときだけ。
         if (views.mode !== mode) {
-            if (mode === 'summary') {
+            if (views.mode === 'form' && views.form) {
+                // **フォームから離れるときに、貼られたものを消します。**
+                // 器は捨てずに取っておくので (下の makeForm は1度きり)、
+                // 消さないと、利用者が貼った Cookie や API キーが切り離された
+                // DOM に残り続けます。ここは DevTools で中を覗ける場所です。
+                // token も一緒に戻し、次に開いたときは必ず入れ直させます。
+                views.form.credentialArea.value = '';
+                views.form.token = null;
+                views.form.appliedProvider = null;
+            }
+            if (mode === 'form') {
+                if (!views.form) { views.form = makeForm(); }
+                el.host.replaceChildren(views.form.root);
+            } else if (mode === 'summary') {
                 if (!views.summary) { views.summary = makeSummary(); }
                 el.host.replaceChildren(views.summary.root);
             } else {
@@ -680,20 +1040,12 @@
             views.mode = mode;
         }
 
-        if (mode === 'summary') {
+        if (mode === 'form') {
+            updateForm(views.form, state.form);
+        } else if (mode === 'summary') {
             updateSummary(views.summary);
         } else {
             updateDetail(views.detail, account);
-        }
-
-        // ログイン画面は別ウィンドウなので、VSCode を見ている限り
-        // 「押したのに何も起きない」ように見える。どこを見ればよいか出す。
-        setHidden(el.banner, !state.guiBusy);
-        if (state.guiBusy) {
-            setText(el.bannerText, t(
-                'Opening a window for {operation}. '
-                + 'Finish there and the result shows up here.',
-                { operation: state.guiBusy }));
         }
 
         el.tabSummary.classList.toggle('active', !account);
@@ -723,13 +1075,13 @@
 
         if (account) {
             const canFetch = state.fetchable.indexOf(account.id) >= 0;
-            el.refresh.disabled = busy || !canFetch || Boolean(state.guiBusy);
+            el.refresh.disabled = busy || !canFetch;
             el.refresh.title = canFetch
                 ? t('Refreshes this account')
                 : t('This account cannot be refreshed right now '
                     + '(disabled, not implemented, or missing its credential)');
         } else {
-            el.refresh.disabled = busy || state.accounts.length === 0 || Boolean(state.guiBusy);
+            el.refresh.disabled = busy || state.accounts.length === 0;
             el.refresh.title = t('Refreshes every account shown');
         }
         setText(el.refresh, busy ? t('Refreshing...') : t('Refresh'));

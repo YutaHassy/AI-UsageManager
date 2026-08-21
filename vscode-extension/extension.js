@@ -31,6 +31,16 @@ let store;
 let log;
 /** @type {vscode.StatusBarItem} */
 let statusBarItem;
+/**
+ * この拡張の置き場所。**画面を開くのに要ります。**
+ *
+ * activate() が受け取る context を毎回引き回さずに済ませるためのものです。
+ * 追加・編集は画面の中のフォームで受けるようになったので、コマンドパレット
+ * から呼ばれたときも画面を開く必要があり、その呼び出しが増えました。
+ *
+ * @type {vscode.Uri}
+ */
+let extensionUri;
 /** @type {NodeJS.Timeout|undefined} */
 let autoRefreshTimer;
 
@@ -61,6 +71,7 @@ function activate(context) {
     // 拡張がどこにあるかを知らないうちは訳が当たらず英語のまま出ます。
     // ここから下は t() を使うので、順番を入れ替えないでください。
     initI18n(context.extensionUri);
+    extensionUri = context.extensionUri;
 
     log = vscode.window.createOutputChannel('AI-UsageManager');
     // trace() は log へ書くので、チャンネルを作った直後が最初の1行になります。
@@ -93,6 +104,8 @@ function activate(context) {
         vscode.commands.registerCommand('aiUsageManager.testProxy', () => testProxy()),
         vscode.commands.registerCommand('aiUsageManager.importProxyFromEnvironment',
             () => importProxyFromEnvironment()),
+        vscode.commands.registerCommand('aiUsageManager.openConfigFile',
+            () => openConfigFile()),
         vscode.commands.registerCommand('aiUsageManager.showLog', () => log.show(true)),
         vscode.commands.registerCommand('aiUsageManager.restartBackend', async () => {
             backend.restart();
@@ -149,6 +162,10 @@ function activate(context) {
             }
         }),
     );
+
+    // 前の版で無くなった設定が残っていれば片付けます。**待ちません** —
+    // 設定ファイルの書き換えに、画面が出るのを待たせる理由がありません。
+    void pruneRemovedSettings();
 
     // 起動直後は静かにしておく。ステータスバーに出す情報が要るので
     // 一覧だけは読みますが、取得 (通信) は利用者が開くまで行いません。
@@ -292,10 +309,50 @@ function applyLanguageChange() {
     // 3. webview。訳文は HTML に埋めてあるので、作り直さないと変わりません。
     UsagePanel.current?.refreshHtml();
 
+    // 4. 取得済みの結果。**これを忘れないこと。** 枠のラベルも状態の要約も
+    //    エラー文もバックエンドが訳して返したもので、こちらに残っている
+    //    のは前の言語の文字列です。捨てるだけでは、自動更新を切っている
+    //    画面が「未取得」のまま止まるので、取り直すところまでやります。
+    store.forgetUsage();
+    void store.refreshAll();
+
     // ステータスバーの文字列もここで作られています。
     updateStatusBar();
 
     vscode.window.setStatusBarMessage(t('The display language has been changed.'), 4000);
+}
+
+/**
+ * 追加・編集のフォームを、使用状況の画面の中に開きます。
+ *
+ * **別のウィンドウは出しません。** ここは以前 PySide6 製のアプリ
+ * ウィンドウを起動していました。あちらが最初に出すのはただのフォームで、
+ * ブラウザはその中の「ログイン」を押して初めて出てきます。**押さない人に
+ * まで QtWebEngine の導入を強いていた**わけです。
+ *
+ * 項目を1つずつ選ばせる形 (QuickPick) も通りました。窓が要らない点では
+ * 正しかったのですが、**いま何が設定されているのかを一望できません**。
+ * 登録内容は互いに関係するもの (取得先が決まって初めて資格情報の意味が
+ * 決まる) なので、並べて見せるほうが分かります。
+ *
+ * @param {'add'|'edit'} mode
+ * @param {string} [accountId]
+ * @returns {Promise<void>}
+ */
+async function openAccountForm(mode, accountId = '') {
+    try {
+        if (!store.snapshot) {
+            await store.reload();
+        }
+    } catch (e) {
+        await showBackendProblem(/** @type {Error} */ (e).message);
+        return;
+    }
+
+    // **画面が閉じていても開きます。** コマンドパレットから呼ばれたときに
+    // 何も起きないと、コマンドが壊れているようにしか見えません。
+    const panel = UsagePanel.show(extensionUri, store, trace);
+    await panel.openForm(mode, accountId);
 }
 
 /**
@@ -371,7 +428,7 @@ async function refreshAll() {
     }
 }
 
-// ================= アカウントの操作 (ログイン画面を伴う) =================
+// ===================== アカウントの操作 =====================
 
 /**
  * 対象アカウントを決めます。
@@ -420,216 +477,19 @@ async function resolveTarget(accountId, placeHolder, filter) {
 }
 
 /**
- * 「別ウィンドウが出ていないかもしれません」と案内し始めるまでの時間 (ミリ秒)。
- *
- * PySide6 の起動と QtWebEngine の初期化には、初回や仮想環境では数秒かかります。
- * 5 秒では正常な起動でも案内が出てしまい、毎回オオカミ少年になります。逆に
- * 1 分では、利用者が「壊れている」と結論を出したあとに出ることになります。
- * 20 秒は、正常なら窓が出ているのに十分で、まだ諦められていない頃合いです。
- */
-const GUI_STUCK_HINT_MS = 20000;
-
-/**
- * 中止を頼んでから、待つのをやめて通知を閉じるまでの猶予 (ミリ秒)。
- *
- * ふつうは、子プロセスを終了させた時点でバックエンドが「中止されました」と
- * 返してくるので、ここまで待つことはありません。**それでも要ります。**
- * 中止が要る状況は「何かが詰まっている」状況そのもので、バックエンド自身が
- * 応答しない可能性を見込んでおかないと、中止を押しても通知が消えない =
- * 結局ウィンドウの再読み込みしか手が無い、という元の症状に戻ります。
- */
-const CANCEL_GRACE_MS = 5000;
-
-/**
- * ログイン画面を伴う操作を走らせます。
- *
- * ダイアログは VSCode とは別のウィンドウに出ます。押した本人は VSCode を
- * 見ているので、**どこを見ればよいかを必ず知らせます。** 黙って待つと
- * 「押しても何も起きない」ようにしか見えません。
- *
- * **必ず中止できるようにしておくこと (cancellable: true)。** 子プロセスが
- * ウィンドウを一つも作らないまま固まる例が出ており、中止できないと利用者に
- * 残る手段は VSCode の再読み込みだけになります。
- *
- * @param {string} operation i18n.ACCOUNT_OPERATIONS の値 (英語の原文)。**訳す前の
- *   ものを渡してください。** 画面に出すぶんはここで t() を通し、ログには
- *   原文のまま残します。ログを読むのは開発者なので、利用者の表示言語によって
- *   検索できる語が変わるのは困ります。
- * @param {() => Promise<void>} action
- * @returns {Promise<boolean>} 最後まで実行できたか (中止・失敗なら false)
- */
-async function runGuiCommand(operation, action) {
-    const title = t(operation);
-    // 利用者自身が中止したか。中止はエラーではないので、この場合は
-    // 「完了できませんでした」というダイアログを出しません。
-    let cancelled = false;
-    // 中止を頼んだのに応答が返らず、待つのをやめたか。
-    let abandoned = false;
-
-    // 急かさないこと。**ログインに時間がかかるのは正常です。** ここで
-    // 「失敗しました」と決めつけると、まだ操作している最中の利用者に
-    // 誤った結論を押し付けることになります。
-    const stuckHint = t('If you cannot find the separate window, check the taskbar. '
-        + 'Use the × on this notification to cancel.');
-
-    try {
-        await vscode.window.withProgress(
-            {
-                location: vscode.ProgressLocation.Notification,
-                title,
-                cancellable: true,
-            },
-            async (progress, token) => {
-                /** @type {vscode.Disposable[]} */
-                const subscriptions = [];
-                /** @type {NodeJS.Timeout[]} */
-                const timers = [];
-
-                // 起動する前から「別ウィンドウで操作してください」と出すと、
-                // まだ無い窓を探させることになる。バックエンドが子プロセスを
-                // 起こした合図 (gui_started) を受けてから進めます。
-                progress.report({ message: t('Preparing the window') });
-                subscriptions.push(backend.onGuiStarted(() => {
-                    progress.report({ message: t('Continue in the separate window') });
-                }));
-
-                timers.push(setTimeout(
-                    () => progress.report({ message: stuckHint }), GUI_STUCK_HINT_MS));
-
-                const givenUp = new Promise((resolve) => {
-                    subscriptions.push(token.onCancellationRequested(() => {
-                        cancelled = true;
-                        progress.report({ message: t('Cancelling') });
-                        // **通知を閉じるだけでは終わりません。** 実際に子プロセスを
-                        // 終了させないと、固まったプロセスが残り、バックエンド側の
-                        // 錠も握られたままになります。
-                        void store.cancelGui().catch((e) => {
-                            log.appendLine(
-                                `[extension] 中止を伝えられませんでした: ${e.message}`);
-                        });
-                        timers.push(setTimeout(() => {
-                            abandoned = true;
-                            resolve(undefined);
-                        }, CANCEL_GRACE_MS));
-                    }));
-                });
-
-                try {
-                    // 見捨てた側 (action) が後から失敗しても未処理の拒否には
-                    // なりません。race がすでに両方に handler を付けています。
-                    await Promise.race([action(), givenUp]);
-                } finally {
-                    for (const timer of timers) {
-                        clearTimeout(timer);
-                    }
-                    for (const subscription of subscriptions) {
-                        subscription.dispose();
-                    }
-                }
-            },
-        );
-    } catch (e) {
-        const message = /** @type {Error} */ (e).message;
-        log.appendLine(`[extension] ${operation} に失敗: ${message}`);
-        if (cancelled) {
-            // 中止した結果の失敗は利用者に見せません。頼んだとおりに
-            // 終わったものを「エラー」として出しても混乱するだけです。
-            return false;
-        }
-        const showLog = t('Show Log');
-        const openSettings = t('Open Settings');
-        // PySide6 が無い場合は、設定で別の Python を指せることを併せて出す。
-        // これが一番よくある詰まりどころ。
-        const actions = message.includes('PySide6')
-            ? [openSettings, showLog]
-            : [showLog];
-        const choice = await vscode.window.showErrorMessage(
-            t('{operation} could not be completed.\n{reason}',
-                { operation: title, reason: message }),
-            ...actions);
-        if (choice === showLog) {
-            log.show(true);
-        } else if (choice === openSettings) {
-            await vscode.commands.executeCommand(
-                'workbench.action.openSettings', 'aiUsageManager.guiPythonPath');
-        }
-        return false;
-    }
-
-    if (abandoned) {
-        // 中止は伝えたが、バックエンドが応答しないまま通知を閉じた。何も
-        // 言わずに閉じると「消えたから終わったのだろう」と受け取られるので、
-        // 残っているかもしれないものと、次の一手を知らせます。
-        const restart = t('Restart Backend');
-        const showLog = t('Show Log');
-        const choice = await vscode.window.showWarningMessage(
-            t('{operation}: cancellation was requested, but there was no response.\n'
-                + 'Close the separate window if it is still open. '
-                + 'If you still cannot go on, restart the backend.',
-                { operation: title }),
-            restart, showLog);
-        if (choice === restart) {
-            await vscode.commands.executeCommand('aiUsageManager.restartBackend');
-        } else if (choice === showLog) {
-            log.show(true);
-        }
-        return false;
-    }
-    if (cancelled) {
-        vscode.window.setStatusBarMessage(
-            t('AI-UsageManager: {operation} was cancelled', { operation: title }), 5000);
-        return false;
-    }
-
-    updateStatusBar();
-    return true;
-}
-
-/**
- * アカウントを追加します。
- *
- * アプリ内ブラウザ (PySide6 + QtWebEngine) のログイン画面を別ウィンドウで
- * 開きます。**PySide6 が入っていない環境ではここで失敗します。** その場合は
- * runGuiCommand が pip のコマンドと `guiPythonPath` の設定を案内するので、
- * 押す前に確かめる (= 追加のたびに一手間を挟む) ことはしません。
+ * アカウントを追加します。**画面の中のフォームで受けます。**
  *
  * @returns {Promise<void>}
  */
 async function addAccount() {
-    try {
-        if (!store.snapshot) {
-            await store.reload();
-        }
-    } catch (e) {
-        await showBackendProblem(/** @type {Error} */ (e).message);
-        return;
-    }
-
-    const before = new Set(store.accounts.map((a) => a.id));
-    if (!await runGuiCommand(ACCOUNT_OPERATIONS.add, () => store.addAccount())) {
-        return;
-    }
-
-    // 増えていたら、そのまま1回取得して結果を見せます。登録直後に「未取得」と
-    // 出ていると、うまくいったのか分からないためです。
-    //
-    // 戻ってきた時点で store は新しい一覧に入れ替わっています
-    // (runGuiOperation がスナップショットを差し替える) ので、読み直しは不要。
-    // ヘルパーは追加した ID を返さないため、差分で探します。
-    const added = store.accounts.find((a) => !before.has(a.id));
-    if (!added) {
-        return;
-    }
-
-    vscode.window.setStatusBarMessage(
-        t("Added '{name}'", { name: added.name }), 5000);
-    if (store.fetchableAccounts().some((a) => a.id === added.id)) {
-        await store.refreshOne(added.id);
-    }
+    await openAccountForm('add');
 }
 
 /**
- * @param {string} [accountId]
+ * アカウントの登録内容を書き換えます。
+ *
+ * @param {string} [accountId] 画面のボタンからは決まっています。
+ *   コマンドパレットから呼ばれたときだけ選ばせます。
  * @returns {Promise<void>}
  */
 async function editAccount(accountId) {
@@ -638,39 +498,31 @@ async function editAccount(accountId) {
     if (!account) {
         return;
     }
-    // 中止・失敗したときは取得しません。触れていないアカウントに通信を
-    // 1回足すだけで、画面に出る内容は変わりません。
-    if (!await runGuiCommand(ACCOUNT_OPERATIONS.edit, () => store.editAccount(account.id))) {
-        return;
-    }
-    if (store.fetchableAccounts().some((a) => a.id === account.id)) {
-        await store.refreshOne(account.id);
-    }
+    await openAccountForm('edit', account.id);
 }
 
 /**
+ * ログインし直します。**行き先は編集のフォームです。**
+ *
+ * 以前はアプリ内ブラウザを開いてログインさせ、Cookie を自動で回収して
+ * いました。その道は畳んだので、期限切れの人に要るのは新しい資格情報を
+ * 貼る場所です。取り方の手順もそこに出ます。
+ *
+ * **入口は残します。** 期限が切れたアカウントの画面に出るのはこのボタン
+ * で、押した先が編集画面であることに不都合はありません。無くすと、切れた
+ * ことに気づいた人が次にどうすればよいのかを示すものが消えます。
+ *
  * @param {string} [accountId]
  * @returns {Promise<void>}
  */
 async function relogin(accountId) {
     const account = await resolveTarget(
-        accountId, t('Choose the account to sign in again'), (a) => a.canRelogin);
+        accountId, t('Choose the account to sign in again'),
+        (a) => a.needsCredential);
     if (!account) {
         return;
     }
-    if (!account.canRelogin) {
-        void vscode.window.showInformationMessage(
-            t('{provider} does not support signing in through a browser. '
-                + 'Set {credential} from "Edit Account".',
-                { provider: account.providerLabel, credential: account.credentialLabel }));
-        return;
-    }
-    if (!await runGuiCommand(ACCOUNT_OPERATIONS.relogin, () => store.relogin(account.id))) {
-        return;
-    }
-    if (store.fetchableAccounts().some((a) => a.id === account.id)) {
-        await store.refreshOne(account.id);
-    }
+    await openAccountForm('edit', account.id);
 }
 
 /**
@@ -684,8 +536,7 @@ async function deleteAccount(accountId) {
         return;
     }
 
-    // 確認はここで済ませる。バックエンド側でもう一度聞くと、別ウィンドウが
-    // 出るだけで二度手間になる。
+    // 確認はここで済ませる。バックエンドは尋ね返さずに実行する。
     const remove = t('Delete');
     const choice = await vscode.window.showWarningMessage(
         t("Delete the account '{name}'?\n"
@@ -696,11 +547,9 @@ async function deleteAccount(accountId) {
         return;
     }
 
-    // **runGuiCommand は通しません。** 削除に別ウィンドウは要らないので
-    // (backend/cli.py の do_delete_account を参照)、待たせる通知も中止の
-    // 手立ても要りません。ここを GUI 側の道に通していたために、PySide6 が
-    // 入っていない環境では削除まで「PySide6 を入れてください」で止まって
-    // いました。
+    // **別ウィンドウは出ません** (backend/cli.py の do_delete_account を
+    // 参照)。ここを PySide6 製のログイン画面へ通していたために、あれが
+    // 入っていない環境では削除すらできませんでした。
     try {
         // 進み具合は**通知ではなくウィンドウ左下**に出します。ふつうは一瞬で
         // 終わりますが、保存されたログイン状態 (ブラウザのキャッシュを含む)
@@ -750,6 +599,90 @@ async function deleteAccount(accountId) {
 // そのものは返さない — hasPassword の真偽だけ)。
 
 /**
+ * この拡張が持たなくなった設定の一覧。**消した版と一緒に、ここへ足します。**
+ *
+ * 設定を manifest から消しても、利用者の settings.json に書かれた値は
+ * 残ります。残ったものは VSCode が「不明な設定です」と警告する対象になり、
+ * **消し方を知らなければ、その警告は永久に消えません。** 消した側が
+ * 片付けるのが筋です。
+ *
+ * @type {{key: string, since: string}[]}
+ */
+const REMOVED_SETTINGS = [
+    // PySide6 入りの Python を指すための設定。アプリ内ブラウザのログイン画面
+    // ごと畳んだので、指す先がありません。
+    { key: 'guiPythonPath', since: '1.7.0' },
+];
+
+/**
+ * 無くなった設定を、利用者の settings.json から取り除きます。
+ *
+ * **触るのは、この拡張が持っていた設定だけです** (aiUsageManager.*)。しかも
+ * REMOVED_SETTINGS に名指しで並べたものだけで、書かれている値は見ません。
+ * 他人の設定ファイルを書き換える以上、対象は広げないこと。
+ *
+ * **黙って消しません。** 消したことを1度だけ知らせます。設定ファイルは
+ * 利用者のものなので、勝手に変えたなら、何を変えたかは言うべきです。
+ * (知らせが出るのは消せたときだけ＝ふつうは一生に一度です。)
+ *
+ * **書けなくても止まりません。** 設定ファイルが読み取り専用だったり、
+ * 手で書いた JSON が壊れていて VSCode が書き戻せないことがあります。
+ * そのときはログに残して素通りします — 片付けそこねただけで拡張が
+ * 立ち上がらなくなるのは、直そうとしている不便より重い。
+ *
+ * @returns {Promise<void>}
+ */
+async function pruneRemovedSettings() {
+    const config = vscode.workspace.getConfiguration('aiUsageManager');
+    /** @type {string[]} */
+    const removed = [];
+
+    for (const { key, since } of REMOVED_SETTINGS) {
+        // **inspect は manifest に無いキーでも答えます。** VSCode は
+        // settings.json に書かれた値を、schema に載っているかどうかとは
+        // 別に持っているためです。ここが効かなければ何も起きないだけで、
+        // 壊れはしません。
+        const found = config.inspect(key);
+        if (!found) {
+            continue;
+        }
+        /** @type {[unknown, vscode.ConfigurationTarget][]} */
+        const scopes = [
+            [found.globalValue, vscode.ConfigurationTarget.Global],
+            [found.workspaceValue, vscode.ConfigurationTarget.Workspace],
+            [found.workspaceFolderValue, vscode.ConfigurationTarget.WorkspaceFolder],
+        ];
+        let gone = false;
+        for (const [value, target] of scopes) {
+            if (value === undefined) {
+                continue;
+            }
+            try {
+                await config.update(key, undefined, target);
+                gone = true;
+                log.appendLine(
+                    `[extension] 無くなった設定を消しました: aiUsageManager.${key}`
+                    + ` (${since} で削除, scope=${target})`);
+            } catch (e) {
+                log.appendLine(
+                    `[extension] 設定 aiUsageManager.${key} を消せませんでした`
+                    + ` (scope=${target}): ${/** @type {Error} */ (e).message}`);
+            }
+        }
+        if (gone) {
+            removed.push(`aiUsageManager.${key}`);
+        }
+    }
+
+    if (removed.length) {
+        void vscode.window.showInformationMessage(
+            t('These settings no longer exist and have been removed from '
+                + 'your settings file: {names}',
+                { names: formatList(removed) }));
+    }
+}
+
+/**
  * VSCode 設定のプロキシ項目 (パスワードを除く) をバックエンドへ反映します。
  *
  * **拡張の設定が真で、バックエンドの config.json はそれを写したものです。**
@@ -779,6 +712,52 @@ async function pushProxySettings() {
 }
 
 /**
+ * 設定ファイル (config.json) をエディタで開きます。
+ *
+ * **VSCode の設定に出ていない項目が、ここにはあります。** 例えば
+ * aoai_allowed_hosts (API キーの送信を許すドメイン) は config.json に
+ * しか無く、取得先のエラーはそこへ足すよう案内します。**開く手立てが
+ * 無いまま案内していたので、言われたとおりにしようがありませんでした。**
+ *
+ * 拡張の設定へ持ち上げないのは、**こちらが唯一の主だから**です。持ち上げると
+ * プロキシ設定と同じように拡張側から書き写すことになり、空の既定値で
+ * 上書きした瞬間に、手で書いた送信先の制限が黙って消えます。消えたことは
+ * 画面のどこにも出ません。
+ *
+ * @returns {Promise<void>}
+ */
+async function openConfigFile() {
+    try {
+        if (!store.snapshot) {
+            await store.reload();
+        }
+    } catch (e) {
+        await showBackendProblem(/** @type {Error} */ (e).message);
+        return;
+    }
+
+    const path = store.snapshot?.configPath;
+    if (!path) {
+        void vscode.window.showWarningMessage(
+            t('The settings file has not been read yet.'));
+        return;
+    }
+
+    const document = await vscode.workspace.openTextDocument(
+        vscode.Uri.file(path));
+    await vscode.window.showTextDocument(document);
+    // **開いて終わりにしないこと。** 直しても、読み直すまでは効きません
+    // (バックエンドは起動時と reload のときにしか読みません)。
+    const restart = t('Restart Backend');
+    const choice = await vscode.window.showInformationMessage(
+        t('Changes to this file take effect after the backend is restarted.'),
+        restart);
+    if (choice === restart) {
+        await vscode.commands.executeCommand('aiUsageManager.restartBackend');
+    }
+}
+
+/**
  * プロキシのパスワードを聞いて、バックエンドへ送ります。
  *
  * **空文字で確定するとパスワードを消します。** キャンセル (Esc) と空文字の
@@ -788,11 +767,27 @@ async function pushProxySettings() {
  * @returns {Promise<void>}
  */
 async function setProxyPassword() {
+    // すでに保存されているかを先に読みます。**入っているのかどうかが
+    // 分からないと、空欄で確定して消してしまったことにも気づけません。**
+    // 返るのは有無だけで、パスワードそのものは返りません
+    // (cli.py の do_get_proxy を参照)。
+    let hasPassword = false;
+    try {
+        ({ hasPassword } = await backend.getProxy());
+    } catch (e) {
+        // 読めなくても入力は続けられます。案内が1行減るだけなので、
+        // ここで止めません。
+        log.appendLine(
+            `[extension] プロキシ設定を読めませんでした: ${/** @type {Error} */ (e).message}`);
+    }
+
     const password = await vscode.window.showInputBox({
         title: t('Set the proxy password'),
         password: true,
         ignoreFocusOut: true,
-        prompt: t('Leave it empty and press Enter to clear the saved password.'),
+        prompt: hasPassword
+            ? t('A password is already saved. Enter a new one to replace it, or leave it empty and press Enter to clear it.')
+            : t('Leave it empty and press Enter to clear the saved password.'),
         placeHolder: t('Proxy password'),
     });
     if (password === undefined) {
@@ -918,7 +913,10 @@ function scheduleAutoRefresh() {
     }
     const minutes = vscode.workspace
         .getConfiguration('aiUsageManager')
-        .get('autoRefreshMinutes', 0);
+        // 既定値は package.json が持っています。ここの第2引数は
+        // マニフェストに登録があれば使われませんが、**2つ目の数字を
+        // 書けば必ず食い違います。** 揃えておきます。
+        .get('autoRefreshMinutes', 1);
     if (!minutes || minutes <= 0) {
         log.appendLine('[extension] 自動更新は無効です。');
         return;

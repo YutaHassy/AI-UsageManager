@@ -2,7 +2,7 @@
   "name": "ai-usage-manager",
   "displayName": "AI-UsageManager",
   "description": "%extension.description%",
-  "version": "1.4.0",
+  "version": "1.7.0",
   "publisher": "YutaHassy",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -44,8 +44,7 @@
       "supported": "limited",
       "description": "%capabilities.untrustedWorkspaces.description%",
       "restrictedConfigurations": [
-        "aiUsageManager.pythonPath",
-        "aiUsageManager.guiPythonPath"
+        "aiUsageManager.pythonPath"
       ]
     }
   },
@@ -105,6 +104,11 @@
         "category": "AI-UsageManager"
       },
       {
+        "command": "aiUsageManager.openConfigFile",
+        "title": "%command.openConfigFile.title%",
+        "category": "AI-UsageManager"
+      },
+      {
         "command": "aiUsageManager.showLog",
         "title": "%command.showLog.title%",
         "category": "AI-UsageManager"
@@ -142,11 +146,6 @@
           "type": "string",
           "default": "",
           "markdownDescription": "%configuration.pythonPath.description%"
-        },
-        "aiUsageManager.guiPythonPath": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "%configuration.guiPythonPath.description%"
         },
         "aiUsageManager.language": {
           "type": "string",

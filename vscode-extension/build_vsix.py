@@ -5,7 +5,7 @@
 
 やることは5つだけです。
 
-1. プロジェクト直下の `services/` `models/` `icons/` と `ui/account_dialog.py` を
+1. プロジェクト直下の `services/` `models/` `icons/` と `ui/*.py` を
    `vscode-extension/backend/` へコピーする
 2. `node --check` で .js の構文を見る
 3. `extension.js` を Node で実際に読み込んでみる (**構文検査では足りないため。**
@@ -16,7 +16,7 @@
 
 **コピーを取るのは、vsix が拡張ディレクトリの外を参照できないためです。**
 取得ロジックとログイン画面の原本はプロジェクト直下の1つだけで、配布のたびに
-そこから同じものを同梱しています (cli.py / gui_helper.py の sys.path 解決も
+そこから同じものを同梱しています (cli.py の sys.path 解決も
 「コピー前ならプロジェクト直下、コピー後なら自分の隣」という同じ前提です)。
 
 **コピー先は毎回消してから作り直します。** 上書きだけだと、原本から消した
@@ -44,13 +44,24 @@ _ROOT = os.path.abspath(os.path.join(_HERE, ".."))
 _BACKEND = os.path.join(_HERE, "backend")
 _DIST = os.path.join(_ROOT, "dist")
 
-# プロジェクト直下からコピーするもの。ディレクトリはまるごと、
-# ui/ は拡張が使う account_dialog.py だけ (デスクトップ版の画面は要らない)。
+# プロジェクト直下からコピーするもの。ディレクトリはまるごと。
+#
+# **ui/ はもう入れません。** 以前は account_dialog.py と
+# session_refresher.py を入れていました。どちらも PySide6 製のログイン画面が
+# 使うもので、その経路を畳んだので、vsix の中から呼ぶ相手がいなくなりました。
+# リポジトリにはデスクトップ版の画面として残してあります。
 _COPY_DIRS = ["services", "models", "icons"]
-_COPY_FILES = [os.path.join("ui", "account_dialog.py"),
-               os.path.join("ui", "session_refresher.py")]
+_COPY_FILES = []
 
-# backend/ に残す原本。コピーで消してはいけないもの。
+# backend/ に残す原本。**コピーで消してはいけないもの**です。
+#
+# **梱包する一覧ではありません。** ここから外すと clean_backend() が
+# リポジトリのファイルごと消します。ビルドを1回走らせるだけで消えるので、
+# 「配布物に入れたくない」を理由にここから外してはいけません。**入れたく
+# ないものは .vscodeignore で落とします。**
+#
+# gui_helper.py は拡張から起動する経路が無くなりましたが、ファイルは
+# 残してあるので、ここにも残します。
 _KEEP = {"cli.py", "gui_helper.py"}
 
 _IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo")
@@ -327,6 +338,316 @@ def _check_placeholders(group: str, lang: str, source: str, translated: str,
         )
 
 
+# ---- ソースに書かれた原文を集める ------------------------------------------
+#
+# **check_l10n はかつてこれを見ていませんでした。** 「原文は複数行の連結で
+# 書かれることが多く、字面から確実に取り出せない」という理由でしたが、実際に
+# やってみると取り出せます。Python は ast (暗黙的な文字列連結はパーサが畳む)、
+# JS は '+' を畳む小さな字句スキャナで足ります。
+#
+# 見ていなかったあいだに、Azure OpenAI の案内文が 6 件、3言語とも訳の無い
+# まま残っていました。カタログ同士は揃っていたので (3枚とも同時に取り残された)、
+# 従来の検査は素通りしていました。**揃っていることと、載っていることは別です。**
+
+_T_CALL_JS = re.compile(r"\bt\s*\(")
+_JS_IDENT = re.compile(r"[A-Za-z0-9_$]")
+
+# t() に変数で渡る原文の出どころ。**字面では取れないので import して読みます。**
+# ここに挙がっているのは、いずれも t(...) に渡っていることをソースで確認した
+# ものだけです (chatgpt._BROWSER_HEADERS のような「訳さない文字列の表」を
+# 機械的に拾うと誤検出になります)。
+_PROVIDER_TEXT_ATTRS = ("description", "credential_label", "credential_hint",
+                        "extra_field_label", "extra_field_hint", "manual_steps")
+
+
+def _python_messages(paths: list) -> dict:
+    """Python ソースの t("...") を {原文: [場所]} で返します。"""
+    import ast
+
+    found = {}
+    for path in paths:
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read(), filename=path)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (func.id if isinstance(func, ast.Name)
+                    else func.attr if isinstance(func, ast.Attribute) else None)
+            if name != "t" or not node.args:
+                continue
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                found.setdefault(first.value, []).append(
+                    f"{os.path.relpath(path, _ROOT)}:{node.lineno}")
+    return found
+
+
+def _indirect_messages() -> dict:
+    """t() に変数で渡る原文 (プロバイダの属性・ラベル表) を集めます。
+
+    **推測せず、実際に import して読みます。** ここを入れないと、30 件以上が
+    「どこからも使われていない訳」に見え、消してよいものと区別が付きません。
+    """
+    if _ROOT not in sys.path:
+        sys.path.insert(0, _ROOT)
+    # クラス属性は訳す前の原文なので言語設定に左右されませんが、
+    # import の副作用で訳が確定する実装に変わった場合に備えて明示します。
+    os.environ.setdefault("AI_USAGE_MANAGER_LANG", "en")
+
+    from services import providers
+    from services.providers import chatgpt, claude, codex, gemini
+
+    found = {}
+
+    def add(value, origin):
+        if isinstance(value, str) and value.strip():
+            found.setdefault(value, []).append(origin)
+
+    seen = []
+    for name in dir(providers):
+        obj = getattr(providers, name)
+        if hasattr(obj, "credential_label") and hasattr(obj, "id") and obj not in seen:
+            seen.append(obj)
+    for provider in seen:
+        cls = provider if isinstance(provider, type) else type(provider)
+        for attr in _PROVIDER_TEXT_ATTRS:
+            add(getattr(provider, attr, None), f"<{cls.__name__}.{attr}>")
+
+    for _seconds, label in getattr(chatgpt, "_WINDOWS", []):
+        add(label, "<chatgpt._WINDOWS>")
+    for _minutes, label in getattr(codex, "_WINDOWS", []):
+        add(label, "<codex._WINDOWS>")
+    for label in getattr(gemini, "_WINDOW_LABELS", {}).values():
+        add(label, "<gemini._WINDOW_LABELS>")
+    for _key, label in getattr(claude, "KNOWN_LIMITS", []):
+        add(label, "<claude.KNOWN_LIMITS>")
+
+    return found
+
+
+def _strip_js(source: str) -> str:
+    """コメントと正規表現リテラルを空白に潰した写しを返します (位置は保つ)。
+
+    文字列リテラルは残します (あとで中身を読むため)。**潰さずに t( を探すと、
+    コメントに書かれた t( や、正規表現の中身を拾ってしまいます。**
+    """
+    out = list(source)
+    i, n = 0, len(source)
+    prev = ""
+    while i < n:
+        c = source[i]
+        if c == "/" and i + 1 < n and source[i + 1] == "/":
+            while i < n and source[i] != "\n":
+                out[i] = " "
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and source[i + 1] == "*":
+            while i < n and not (source[i] == "*" and i + 1 < n and source[i + 1] == "/"):
+                if source[i] != "\n":
+                    out[i] = " "
+                i += 1
+            for j in range(i, min(i + 2, n)):
+                out[j] = " "
+            i += 2
+            continue
+        if c in "'\"`":
+            quote = c
+            i += 1
+            while i < n:
+                if source[i] == "\\":
+                    i += 2
+                    continue
+                if source[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            prev = "str"
+            continue
+        if c == "/" and prev not in ("ident", "close", "str"):
+            i += 1
+            while i < n:
+                if source[i] == "\\":
+                    i += 2
+                    continue
+                if source[i] == "[":
+                    while i < n and source[i] != "]":
+                        i += 2 if source[i] == "\\" else 1
+                    continue
+                if source[i] == "/":
+                    out[i] = " "
+                    i += 1
+                    break
+                out[i] = " "
+                i += 1
+            prev = "close"
+            continue
+        if not c.isspace():
+            prev = ("ident" if _JS_IDENT.match(c)
+                    else "close" if c in ")]" else "op")
+        i += 1
+    return "".join(out)
+
+
+_JS_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f",
+               "v": "\v", "0": "\0"}
+
+
+def _read_js_string(source: str, i: int):
+    """source[i] のクォートから文字列を読み、(値, 次の位置, 補間の有無) を返す。"""
+    quote = source[i]
+    i += 1
+    buf = []
+    interpolated = False
+    n = len(source)
+    while i < n:
+        c = source[i]
+        if c == "\\":
+            nxt = source[i + 1] if i + 1 < n else ""
+            if nxt == "u" and i + 2 < n and source[i + 2] == "{":
+                end = source.index("}", i + 2)
+                buf.append(chr(int(source[i + 3:end], 16)))
+                i = end + 1
+                continue
+            if nxt == "u":
+                buf.append(chr(int(source[i + 2:i + 6], 16)))
+                i += 6
+                continue
+            if nxt == "x":
+                buf.append(chr(int(source[i + 2:i + 4], 16)))
+                i += 4
+                continue
+            if nxt == "\n":
+                i += 2
+                continue
+            buf.append(_JS_ESCAPES.get(nxt, nxt))
+            i += 2
+            continue
+        if c == quote:
+            return "".join(buf), i + 1, interpolated
+        if quote == "`" and c == "$" and i + 1 < n and source[i + 1] == "{":
+            interpolated = True
+        buf.append(c)
+        i += 1
+    return "".join(buf), i, interpolated
+
+
+def _js_messages(paths: list) -> dict:
+    """JS ソースの t('...') を {原文: [場所]} で返します ('+' 連結は畳む)。"""
+    found = {}
+    for path in paths:
+        with open(path, encoding="utf-8") as f:
+            raw = f.read()
+        stripped = _strip_js(raw)
+        n = len(stripped)
+        for match in _T_CALL_JS.finditer(stripped):
+            start = match.start()
+            # 直前が識別子の一部なら別の関数 (get( / format( / split( …)。
+            # ドットは i18n.t( のようなメソッド呼び出しなので通します。
+            if start > 0 and _JS_IDENT.match(stripped[start - 1]):
+                continue
+            i = match.end()
+            parts = []
+            dynamic = False
+            while i < n:
+                while i < n and stripped[i].isspace():
+                    i += 1
+                if i < n and stripped[i] in "'\"`":
+                    value, i, interpolated = _read_js_string(raw, i)
+                    dynamic = dynamic or interpolated
+                    parts.append(value)
+                else:
+                    dynamic = True
+                    break
+                while i < n and stripped[i].isspace():
+                    i += 1
+                if i < n and stripped[i] == "+":
+                    i += 1
+                    continue
+                break
+            if dynamic or not parts:
+                continue
+            line = raw.count("\n", 0, start) + 1
+            found.setdefault("".join(parts), []).append(
+                f"{os.path.relpath(path, _ROOT)}:{line}")
+    return found
+
+
+def _account_operations() -> dict:
+    """i18n.js の ACCOUNT_OPERATIONS。t(定数) の形なので字面では取れません。"""
+    path = os.path.join(_HERE, "i18n.js")
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    block = re.search(r"const ACCOUNT_OPERATIONS = \{(.*?)\}", text, re.S)
+    if not block:
+        return {}
+    return {m.group(1): ["<i18n.ACCOUNT_OPERATIONS>"]
+            for m in re.finditer(r"'([^']+)'", block.group(1))}
+
+
+def _source_messages():
+    """(Python 側の原文, JS 側の原文) を返します。値は出どころの一覧です。"""
+    python_paths = []
+    for sub in ("services", "models", "ui"):
+        for base, dirs, files in os.walk(os.path.join(_ROOT, sub)):
+            dirs[:] = [d for d in dirs if d != "__pycache__"]
+            python_paths += [os.path.join(base, f)
+                             for f in sorted(files) if f.endswith(".py")]
+    # backend/ の services 等はここで作ったコピーなので数えません。
+    # cli.py はコピーではなく原本なので数えます。
+    python_paths.append(os.path.join(_BACKEND, "cli.py"))
+
+    python_found = _python_messages(python_paths)
+    for message, origins in _indirect_messages().items():
+        python_found.setdefault(message, []).extend(origins)
+
+    js_paths = [os.path.join(_HERE, name) for name in
+                ("backend.js", "extension.js", "i18n.js", "launcher.js",
+                 "panel.js", "store.js")]
+    js_paths.append(os.path.join(_HERE, "media", "main.js"))
+    js_found = _js_messages([p for p in js_paths if os.path.isfile(p)])
+    for message, origins in _account_operations().items():
+        js_found.setdefault(message, []).extend(origins)
+
+    return python_found, js_found
+
+
+def check_webview_protocol():
+    """webview が送るメッセージと、パネル側の受け口を突き合わせます。
+
+    **この2つは手作業で揃えているだけでした。** media/main.js の
+    `postMessage({type: '...'})` と panel.js の `case '...':` は、綴りが一字
+    ずれても、片方を消し忘れても、何も言わずに通ります。露見のしかたが
+    両方向で悪い:
+
+      受け口が無い … 押しても**何も起きない**ボタンになります。エラーも
+                     出ないので、利用者には壊れていることすら分かりません。
+      送り手が無い … 到達できない分岐が残ります。読む人はそこが使われて
+                     いると信じ、説明まで書き足します (実際に書きました)。
+
+    1.7.0 でログイン画面を撤去したとき、後者が3つ残っていました。**通しの
+    検査が無かったから残ったので、ここに置きます。**
+    """
+    main_js = os.path.join(_HERE, "media", "main.js")
+    panel_js = os.path.join(_HERE, "panel.js")
+    with open(main_js, encoding="utf-8") as f:
+        sent = set(re.findall(r"type:\s*'([A-Za-z]+)'", _strip_js(f.read())))
+    with open(panel_js, encoding="utf-8") as f:
+        handled = set(re.findall(r"case '([A-Za-z]+)':", _strip_js(f.read())))
+
+    problems = []
+    for name in sorted(sent - handled):
+        problems.append(f"webview が送る '{name}' を panel.js が受けていません"
+                        " (押しても何も起きないボタンになります)。")
+    for name in sorted(handled - sent):
+        problems.append(f"panel.js の '{name}' を送るところがありません"
+                        " (到達できない分岐です)。")
+    if problems:
+        fail("webview のやり取り:"
+             + "".join("\n  - " + p for p in problems))
+    print(f"[build] やり取り OK: {len(sent)} 種のメッセージ")
+
+
 def check_l10n():
     """翻訳カタログが揃っているかを、固める前に見ます。
 
@@ -336,11 +657,16 @@ def check_l10n():
       l10n/bundle.l10n.*.json     … 拡張ホストと webview の JS
       services/locales/*.json     … バックエンド (Python)
 
-    **見ないもの:** 「ソースにある原文が全部カタログに載っているか」は
-    見ません。原文は複数行の連結で書かれることが多く、字面から確実に
-    取り出せないためです。載っていない原文は英語のまま出るだけなので、
-    黙って壊れることはありません。ここで防ぎたいのは**言語ごとの食い違い**
-    — 3枚のうち1枚だけ直した、という状態です。
+    見るのは2つです。**言語ごとの食い違い** (3枚のうち1枚だけ直した) と、
+    **ソースにある原文がカタログに載っているか**。
+
+    後者はかつて見ていませんでした。「原文は複数行の連結で書かれることが
+    多く、字面から確実に取り出せない」という理由でしたが、実際には取れます
+    (_source_messages を参照)。見ていなかったあいだに Azure OpenAI の
+    案内文が 6 件、3言語とも訳の無いまま残り、日本語表示でも英語で出て
+    いました。**カタログ同士は揃っていた**ので (3枚とも同時に取り残された)、
+    揃いだけを見る検査は素通りしていたのです。揃っていることと、載って
+    いることは別です。
     """
     problems = []
 
@@ -373,9 +699,12 @@ def check_l10n():
 
     # 2. l10n bundle (JS) と 3. services/locales (Python)
     #    どちらも「英語の原文が見出し」なので、見出しそのものと訳文を突き合わせます。
-    for group, directory, pattern in (
-        ("l10n bundle", os.path.join(_HERE, "l10n"), "bundle.l10n.{lang}.json"),
-        ("services/locales", os.path.join(_ROOT, "services", "locales"), "{lang}.json"),
+    source_python, source_js = _source_messages()
+    for group, directory, pattern, sources in (
+        ("l10n bundle", os.path.join(_HERE, "l10n"),
+         "bundle.l10n.{lang}.json", source_js),
+        ("services/locales", os.path.join(_ROOT, "services", "locales"),
+         "{lang}.json", source_python),
     ):
         catalogs = {}
         for lang in _LANGS:
@@ -391,6 +720,26 @@ def check_l10n():
                     continue
                 _check_placeholders(group, lang, source, translated, problems)
         _check_same_keys(group, catalogs, problems)
+
+        # **ソースの原文が載っているか。** 載っていなければ、その1行だけが
+        # 日本語表示でも英語で出ます。画面を見ても「まだ訳していない」のか
+        # 「壊れている」のか見分けが付かないので、ここで止めます。
+        listed = set()
+        for keys in catalogs.values():
+            listed |= set(keys)
+        for message in sorted(sources):
+            if message not in listed:
+                where = ", ".join(sources[message][:2])
+                problems.append(
+                    f"{group}: ソースにある原文がカタログにありません "
+                    f"({where}): {message[:70]!r}")
+
+        # 逆に、どこからも使われていない訳。**止めません。** 保険として
+        # 置いてある既定引数のようなものがあり、消すべきかは人が決めること
+        # です。気づけるように出すだけにします。
+        for message in sorted(listed - set(sources)):
+            print(f"[build] {group}: 使われていない訳があります: "
+                  f"{message[:70]!r}", file=sys.stderr)
 
     if problems:
         for problem in problems:
@@ -438,6 +787,7 @@ def main():
     copy_sources()
     copy_license()
     check_js()
+    check_webview_protocol()
     check_l10n()
     out = package()
     size = os.path.getsize(out)

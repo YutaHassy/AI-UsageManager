@@ -285,8 +285,8 @@ class GeminiProvider(UsageProvider):
     auth_kind = AUTH_COOKIE
     credential_label = "Cookie"
     credential_hint = (
-        "Google accounts cannot be signed in to from the built-in browser.\n"
-        'Paste a cookie from "Cannot sign in?" instead.'
+        "Paste what you copied from your browser.\n"
+        "Only the cookies Gemini needs are taken out of it."
     )
 
     login_url = HOME_URL
@@ -294,8 +294,9 @@ class GeminiProvider(UsageProvider):
     cookie_domain = "google.com"
     session_cookie_name = "__Secure-1PSID"
 
-    # Google は埋め込みブラウザからのサインインを拒否するため、
-    # 実質こちらが本線です。詳細は base.UsageProvider.manual_url を参照。
+    # 普段のブラウザで取ってくる道。**これが唯一の道です。**
+    # (Google は埋め込みブラウザからのサインインを拒否します。)
+    # 詳細は base.UsageProvider.manual_url を参照。
     manual_url = USAGE_PAGE_URL
     manual_steps = (
         "1. Use the button below to open Gemini in your usual browser.\n"
@@ -317,15 +318,15 @@ class GeminiProvider(UsageProvider):
         "6. Any of the remaining rows will do. Right-click it and choose\n"
         '   "Copy" then "Copy as cURL".\n'
         "\n"
-        '7. Paste it into the box below and press "Set".\n'
+        "7. Paste it into the box below and save.\n"
         "\n"
-        '* Picking the wrong row is fine. Press "Set" and you will be told\n'
+        "* Picking the wrong row is fine. Save and you will be told\n"
         "  exactly what is missing.\n"
         "* Only the cookies Gemini needs are taken out of what you paste;\n"
         "  the rest (which covers your whole Google account) is discarded.\n"
         '* If you cannot find "Copy as cURL" in step 6, click the row,\n'
-        '   go to "Headers" then "Request Headers", right-click the cookie\n'
-        '   and use "Copy value" instead.'
+        '  go to "Headers" then "Request Headers", right-click the cookie\n'
+        '  and use "Copy value" instead.'
     )
 
     implemented = True
@@ -587,7 +588,7 @@ class GeminiProvider(UsageProvider):
         if not cookie:
             raise UsageError(
                 t('{credential} is not set. Set it from "Sign In Again".',
-                  credential=self.credential_label),
+                  credential=t(self.credential_label)),
                 auth_error=True,
             )
 

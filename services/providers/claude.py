@@ -42,8 +42,8 @@ class ClaudeProvider(UsageProvider):
     auth_kind = AUTH_COOKIE
     credential_label = "Cookie"
     credential_hint = (
-        'Press "Get cookies automatically" above and sign in,\n'
-        "or paste sessionKey=sk-ant-sid01-... yourself."
+        "Paste what you copied from your browser,\n"
+        "or sessionKey=sk-ant-sid01-... on its own."
     )
     credential_marker = "sk-ant-"
 
@@ -51,6 +51,48 @@ class ClaudeProvider(UsageProvider):
     home_url = "https://claude.ai/"
     cookie_domain = "claude.ai"
     session_cookie_name = "sessionKey"
+
+    # 普段のブラウザで取ってくる道。**これが唯一の道です。**
+    #
+    # 埋め込みブラウザでログインさせる作りは畳みました。認証側が
+    # 埋め込みを拒むことがあり (Google がそうです)、それは埋め込んだ側が
+    # パスワード入力を覗けるという理由で存在する保護だからです。偽装して
+    # 通そうとするのではなく、**普段お使いのブラウザで取ってきてもらう**
+    # のが筋で、たいていの場合そちらは既にログイン済みでもあります。
+    #
+    # 貼り付けられたものの解釈は既に揃っています
+    # (extract_cookie_header が cURL 形式を解きます)。ここは入口の
+    # 言葉だけです。
+    manual_url = "https://claude.ai/"
+    manual_steps = (
+        "1. Use the button below to open Claude in your usual browser.\n"
+        "   (do not copy the page itself — just open it)\n"
+        "\n"
+        "2. Press F12 on that page. The developer tools open\n"
+        "   beside or below the page.\n"
+        "\n"
+        '3. Choose the "Network" tab at the top of the developer tools.\n'
+        "\n"
+        '4. Type  organizations  into the "Filter" box below that tab.\n'
+        "   * This step matters. Without filtering you will pick a request\n"
+        "     that has nothing to do with Claude, and the cookie you need\n"
+        "     will not be attached to it.\n"
+        "\n"
+        "5. Press F5 to reload the page.\n"
+        "   Only the filtered requests are listed.\n"
+        "\n"
+        "6. Any of the remaining rows will do. Right-click it and choose\n"
+        '   "Copy" then "Copy as cURL".\n'
+        "\n"
+        "7. Paste it into the box below and save.\n"
+        "\n"
+        "* Picking the wrong row is fine. Save and you will be told\n"
+        "  exactly what is missing.\n"
+        "* Only the cookies Claude needs are taken out of what you paste.\n"
+        '* If you cannot find "Copy as cURL" in step 6, click the row,\n'
+        '  go to "Headers" then "Request Headers", right-click the cookie\n'
+        '  and use "Copy value" instead.'
+    )
 
     uses_extra_field = True
     extra_field_label = "Organization ID"

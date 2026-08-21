@@ -13,7 +13,7 @@ dist/
 *.vsix
 
 # build_vsix.py がプロジェクト直下から backend/ へコピーして作る複製。
-# 原本は services/ models/ icons/ ui/account_dialog.py の側なので、
+# 原本は services/ models/ icons/ ui/*.py の側なので、
 # 複製を追跡すると同じ変更が2箇所に出て差分が読めなくなる。
 # backend/cli.py と backend/gui_helper.py は複製ではなく原本なので追跡する。
 vscode-extension/backend/services/

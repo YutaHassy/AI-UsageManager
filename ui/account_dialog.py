@@ -375,7 +375,7 @@ class LoginDialog(QDialog):
         self._proxy_auth_failed = True
         self._set_error_bar(t(
             "  ⚠ The proxy {host} is asking for authentication.\n"
-            "  Enter the proxy user name and password in Settings.",
+            "  Set the proxy user name and password, then try again.",
             host=proxy_host,
         ))
 
@@ -386,7 +386,7 @@ class LoginDialog(QDialog):
         self._set_error_bar(t(
             "  ⚠ The page could not be loaded.\n"
             "  Proxy: {proxy}\n"
-            "  Behind a corporate proxy, set the proxy credentials in Settings.",
+            "  Behind a corporate proxy, set the proxy user name and password.",
             proxy=proxy_manager.redacted_proxy_url(),
         ))
 

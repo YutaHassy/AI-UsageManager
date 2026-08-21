@@ -390,12 +390,12 @@
         <tr>
           <td><strong>Claude.ai</strong></td>
           <td>Pro / Max の枠（5時間・週間・週間 Opus・週間 Sonnet）</td>
-          <td>ログイン画面、または <code>sessionKey</code> の貼り付け</td>
+          <td>ブラウザから取った <code>sessionKey</code></td>
         </tr>
         <tr>
           <td><strong>ChatGPT</strong></td>
           <td>プランの枠（5時間 / 日次 / 週間）と追加クレジット</td>
-          <td>ログイン画面、または Cookie の貼り付け</td>
+          <td>ブラウザから取った Cookie</td>
         </tr>
         <tr>
           <td><strong>Gemini</strong></td>
@@ -498,20 +498,16 @@
           <td><strong>表示と更新に必須</strong></td>
           <td><code>pip install requests urllib3</code></td>
         </tr>
-        <tr>
-          <td><strong><code>PySide6</code> / <code>PySide6-Addons</code></strong></td>
-          <td>アカウントの<strong>追加・編集・再ログイン</strong>のときだけ</td>
-          <td><code>pip install PySide6 PySide6-Addons</code></td>
-        </tr>
       </tbody>
     </table>
   </div>
 
   <div class="note">
-    <span class="note-t">PySide6 は「ログイン画面を開くとき」だけ使います</span>
-    使用状況の<strong>表示・更新・アカウントの削除では一切使いません</strong>。
-    <code>requests</code> の環境に PySide6 を混ぜたくない場合は、設定
-    <code>aiUsageManager.guiPythonPath</code> に PySide6 が入った別の Python を指定してください。
+    <span class="note-t">要るのはこの2つだけです</span>
+    表示・更新はもちろん、<strong>アカウントの追加・編集・削除にも他のものは要りません</strong>。
+    以前の版は、ログイン用のブラウザ画面のために <code>PySide6</code> を求めていましたが、
+    <strong>その画面は無くなりました</strong>。資格情報は、利用者が普段お使いのブラウザから
+    取ってきて、拡張の画面に貼り付けます。
   </div>
 
   <h3>Python の探し方</h3>
@@ -640,22 +636,22 @@
   <div class="tablewrap">
     <table>
       <thead>
-        <tr><th>取得先</th><th>登録のしかた</th><th>PySide6</th></tr>
+        <tr><th>取得先</th><th>登録のしかた</th><th>どこから取るか</th></tr>
       </thead>
       <tbody>
         <tr>
-          <td><strong>Claude.ai</strong><br><span class="small mute">ChatGPT も同じ</span></td>
-          <td><strong>別ウィンドウのログイン画面</strong>でサインインします。Cookie を貼り付けての登録も可能です。</td>
-          <td>必要</td>
+          <td><strong>Claude.ai</strong><br><span class="small mute">ChatGPT・Gemini も同じ</span></td>
+          <td><strong>Cookie を貼り付けます。</strong>普段お使いのブラウザで開き、開発者ツールから取り出す手順が、番号付きで画面にそのまま出ます。</td>
+          <td>既定のブラウザ</td>
         </tr>
         <tr>
-          <td><strong>Gemini</strong></td>
-          <td><strong>Cookie の手貼りのみ</strong>です。普段のブラウザの開発者ツールから取り出す手順が、画面にそのまま出ます。</td>
-          <td>必要</td>
+          <td><strong>Anthropic API</strong></td>
+          <td><strong>Admin API キーを貼り付けます。</strong>発行するページを開くボタンが画面に出ます。</td>
+          <td>既定のブラウザ</td>
         </tr>
         <tr>
-          <td><strong>Anthropic API</strong><br><span class="small mute">Azure OpenAI も同じ</span></td>
-          <td><strong>API キーを入力するだけ</strong>です。ブラウザは開きません。</td>
+          <td><strong>Azure OpenAI</strong></td>
+          <td><strong>API キーを貼り付けるだけ</strong>です。キーはゲートウェイの運用者から受け取ります。</td>
           <td>—</td>
         </tr>
       </tbody>
@@ -663,26 +659,42 @@
   </div>
 
   <div class="note">
-    <span class="note-t">ログインは VSCode の外の別ウィンドウで行います</span>
+    <span class="note-t">登録は VSCode の中の1画面で完結します</span>
     <p>
-      サインインは、VSCode とは別に開く<strong>ブラウザのウィンドウ</strong>（PySide6 の Chromium 画面）で行います。
-      <strong>VSCode の Webview の中では、他社サイトの Cookie を回収できない</strong>ためです。
-      エディタ内で済ませているように見せかけるのではなく、実際に別ウィンドウを開いています。
+      追加も編集も、<strong>使用状況のタブの中に開くフォーム</strong>で行います。
+      取得先・名前・資格情報・上限金額が一度に見え、<strong>別のウィンドウは出ません</strong>。
     </p>
+    <ol class="small">
+      <li>「＋ 追加」を押し、<strong>最初に取得先を選びます</strong>。以降の欄がその取得先に合わせて入れ替わります。</li>
+      <li>取り方の手順と、<strong>既定のブラウザでそのページを開くボタン</strong>が出ます。普段のブラウザなら、たいていは既にログイン済みです。</li>
+      <li>手順どおりにコピーして、フォームの入力欄に<strong>貼り付けます</strong>。</li>
+      <li>保存します。</li>
+    </ol>
     <p class="small">
-      ボタンを押すと VSCode に「別のウィンドウで続けてください」という進行中の通知が出ます。
-      <strong>ウィンドウが出てこないときは、その通知の × で中止できます。</strong>
-      中止するとバックエンド側のログイン用プロセスも終了するので、
-      VSCode を再読み込みせずに次の操作へ進めます。
+      <strong>丸ごと貼ってください。</strong> Cookie を使う取得先では手順の最後が
+      <code>Copy as cURL</code> になっていて、クリップボードには長いコマンドが入ります。
+      必要な部分だけを拡張が取り出し、残りは捨てます。
+      <strong>どこが Cookie かを自分で探す必要はありません。</strong>
+      違う行を選んでしまっても、保存すれば何が足りないかを教えます。
     </p>
   </div>
 
-  <div class="note warn">
-    <span class="note-t">Gemini だけは Cookie を手で貼る必要があります</span>
-    Google が<strong>埋め込みブラウザからのサインインを拒否する</strong>ため、内蔵のログイン画面は使えません。
-    代わりに、普段お使いのブラウザで Gemini を開き、<kbd>F12</kbd> の開発者ツールから
-    Cookie を取り出す手順が、番号付きで画面に表示されます。
-    <strong>貼り付けた中から Gemini に必要な Cookie だけを取り出し、残りは捨てて保存します。</strong>
+  <div class="note">
+    <span class="note-t">なぜ内蔵のブラウザをやめたか</span>
+    <p class="small">
+      理由は2つあります。1つは、<strong>API キーを貼るだけの人にまでブラウザエンジンの
+      導入を強いていた</strong>こと。もう1つは、<strong>埋め込みブラウザからのサインインを
+      拒む取得先がある</strong>ことです（Google がそうです）。それは埋め込んだ側が
+      パスワード入力を覗けるという理由で存在する保護なので、迂回しようとするのは
+      筋が悪い。<strong>普段お使いのブラウザで取ってくる</strong>ほうが正しく、
+      そちらは大抵ログイン済みでもあります。
+    </p>
+    <p class="small">
+      <strong>1つだけ失われたものがあります。</strong> Claude のセッションは、以前は
+      その画面のプロファイルを使って裏で黙って更新していました。今後は期限切れが
+      そのまま通知され、新しい資格情報を貼り直すことになります。
+      ChatGPT と Gemini は取得先の側で延長されるため、影響はありません。
+    </p>
   </div>
 
   <div class="note small">
@@ -717,11 +729,12 @@
       <tbody>
         <tr><td>使用状況を開く</td><td>使用状況の画面をエディタタブで開く</td></tr>
         <tr><td>すべて更新</td><td>取得できるアカウントをすべて更新する</td></tr>
-        <tr><td>アカウントを追加</td><td>ログイン画面を開いて新しいアカウントを登録する</td></tr>
-        <tr><td>アカウントを編集</td><td>登録内容を変更する</td></tr>
-        <tr><td>再ログイン</td><td>ログイン画面を開いて Cookie を取り直す</td></tr>
+        <tr><td>アカウントを追加</td><td>新しいアカウントのフォームを開く</td></tr>
+        <tr><td>アカウントを編集</td><td>登録済みアカウントのフォームを開く</td></tr>
+        <tr><td>再ログイン</td><td>同じフォーム。期限切れの資格情報を貼り直すときの名前</td></tr>
         <tr><td>アカウントを削除</td><td>アカウントと保存されたログイン状態を消す</td></tr>
         <tr><td>設定を開く</td><td>この拡張の設定だけに絞って設定画面を開く</td></tr>
+        <tr><td>設定ファイルを開く（config.json）</td><td>拡張の設定には無い項目（<code>aoai_allowed_hosts</code> など）を直すためにエディタで開く</td></tr>
         <tr><td>ログを表示</td><td>バックエンドのログを出力チャンネルに表示する</td></tr>
         <tr><td>バックエンドを再起動</td><td>Python のプロセスを作り直す</td></tr>
         <tr><td>言語</td><td>表示言語を選ぶ</td></tr>
@@ -738,7 +751,6 @@
       <thead><tr><th>設定</th><th>既定</th><th>内容</th></tr></thead>
       <tbody>
         <tr><td><code>aiUsageManager.pythonPath</code></td><td><code>""</code></td><td>バックエンドを動かす Python。空欄で自動検出</td></tr>
-        <tr><td><code>aiUsageManager.guiPythonPath</code></td><td><code>""</code></td><td>ログイン画面（PySide6）を動かす Python。空欄なら上と同じ</td></tr>
         <tr><td><code>aiUsageManager.language</code></td><td><code>auto</code></td><td>表示言語（<code>auto</code> / <code>en</code> / <code>ja</code> / <code>ko</code> / <code>zh-cn</code>）</td></tr>
         <tr><td><code>aiUsageManager.autoRefreshMinutes</code></td><td><code>1</code></td><td>自動更新の間隔（分）。<code>0</code> で無効</td></tr>
         <tr><td><code>aiUsageManager.refreshOnOpen</code></td><td><code>true</code></td><td>画面を開いたときに1回更新する</td></tr>
@@ -779,8 +791,12 @@
           <td>メッセージに<strong>そのまま実行できる <code>pip install</code> の行</strong>が出ています。それを実行してから「バックエンドを再起動」してください。</td>
         </tr>
         <tr>
-          <td>アカウントの追加でログイン画面が出てこない</td>
-          <td>進行中の通知の <strong>×</strong> で中止できます。<code>PySide6</code> と <code>PySide6-Addons</code> が入っているか確認し、別の Python に入っている場合は <code>aiUsageManager.guiPythonPath</code> を設定してください。</td>
+          <td>「ブラウザで開く」を押してもブラウザが開かない</td>
+          <td>開くのは<strong>お使いの既定のブラウザ</strong>です。既定のブラウザが設定されていない場合は開けません。その場合は、手順に書かれている URL を自分でブラウザに入力してください。</td>
+        </tr>
+        <tr>
+          <td>貼り付けて保存したのに「見つかりません」と出る</td>
+          <td><strong>違う行を選んでいる可能性が高いです。</strong>手順の「Filter に入れる語」を飛ばすと、関係のない通信を選んでしまい、必要な Cookie が付いていません。手順のその段からやり直してください。</td>
         </tr>
         <tr>
           <td>ChatGPT が「再ログイン」と言い続ける</td>

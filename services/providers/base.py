@@ -384,14 +384,18 @@ class HttpClient:
             raise UsageError(t(
                 "Proxy error: {reason}\n"
                 "Proxy: {proxy}\n"
-                "Check the proxy user name and password in Settings.",
+                "Check the proxy user name and password. The password is "
+                "kept separately from the other settings, encrypted.",
                 reason=e, proxy=proxy_manager.redacted_proxy_url(),
             )) from e
         except requests.exceptions.SSLError as e:
             raise UsageError(t(
                 "SSL error: {reason}\n"
-                "Behind a corporate proxy, point REQUESTS_CA_BUNDLE "
-                "at the CA certificate.",
+                "Behind a corporate proxy, point REQUESTS_CA_BUNDLE at the CA "
+                "certificate. The value comes from the environment this "
+                "process was started with, so set it first and then start "
+                "the editor again — setting it while the editor is running "
+                "does not reach here, not even after restarting the backend.",
                 reason=e,
             )) from e
         except requests.exceptions.Timeout as e:
@@ -444,7 +448,8 @@ class HttpClient:
                 "Proxy authentication error (407): "
                 "the proxy needs a user name and password.\n"
                 "Proxy: {proxy}\n"
-                "Enter them in Settings.",
+                "The user name is a setting; the password has its own "
+                "entry point, because it is stored encrypted.",
                 proxy=proxy_manager.redacted_proxy_url(),
             ))
         if response.status_code == 429:

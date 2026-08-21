@@ -65,6 +65,25 @@ class AnthropicCostProvider(UsageProvider):
                        "(issued at Console → Settings → Admin keys)")
     credential_marker = "sk-ant-admin"
 
+    # API キー方式でもブラウザは要ります。**キーは Console で発行するもの**
+    # なので、Cookie 方式と同じ導線 (manual_url / manual_steps) に載せて、
+    # 「どこで発行するか」を画面から辿れるようにします。
+    manual_url = "https://console.anthropic.com/settings/admin-keys"
+    manual_steps = (
+        "1. Use the button below to open the Anthropic Console\n"
+        "   in your usual browser.\n"
+        "\n"
+        "2. Create a new Admin key on that page and give it a name.\n"
+        "\n"
+        "3. Copy the key it shows you. It starts with sk-ant-admin01-\n"
+        "   and it is shown only once.\n"
+        "\n"
+        "4. Paste it into the box below and save.\n"
+        "\n"
+        "* Admin keys belong to an organization. A personal account has\n"
+        "  no Admin keys page, and an ordinary API key will not work here."
+    )
+
     supports_budget = True
     currency = "USD"
 
@@ -93,7 +112,7 @@ class AnthropicCostProvider(UsageProvider):
         if not api_key:
             raise UsageError(
                 t('{credential} is not set. Set it from "Edit".',
-                  credential=self.credential_label),
+                  credential=t(self.credential_label)),
                 auth_error=True,
             )
 

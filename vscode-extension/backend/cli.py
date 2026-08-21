@@ -14,23 +14,39 @@
 
 デスクトップ版 (main.py) とは **同じ config.json を共有します**。
 
-アカウントの登録・編集・再ログインは、すべてアプリ内ブラウザ (QtWebEngine) の
-ログイン画面で行います。QtWebEngine はこのプロセスでは動かせないため
-(下記)、gui_helper.py を別プロセスとして起動して任せます。
+**アカウントの操作は、すべてこのプロセスの中で完結します。** 追加・編集・
+削除・表示・更新のどれにも別ウィンドウは要りません。入力を受けるのは拡張の
+画面 (webview) の中のフォームで、資格情報は利用者が普段のブラウザから
+取ってきて、そこへ貼ります。
 
-**削除はここで完結させます。** 消すのに窓は要らないのに、これも
-gui_helper.py へ回していたため、PySide6 が入っていない環境では削除まで
-「PySide6 を入れてください」で止まっていました。窓が要る操作と要らない
-操作を、同じ理由で同じ道に通さないでください。
+以前は、追加と再ログインをアプリ内ブラウザ (QtWebEngine) のログイン画面で
+行い、それを gui_helper.py という別プロセスに任せていました。**その経路は
+畳みました。** 理由は2つあります。
+
+1つ目。**窓が要らない操作まで、同じ道に通していました。** 削除にも編集にも
+窓は要らないのに gui_helper.py へ回していたため、PySide6 が入っていない
+環境ではアカウントを消すことすらできませんでした。追加も同じで、あちらが
+最初に出すのはただのフォームです — ブラウザはその中の「ログイン」を押して
+初めて出てきます。**押さない人にまで QtWebEngine の導入を強いていた**
+わけです。同じ取り違えを3回繰り返しました。
+
+2つ目。**埋め込みブラウザは、認証側から拒まれることがあります。** Google が
+そうです。それは埋め込んだ側がパスワード入力を覗けるという理由で存在する
+保護なので、偽装して通そうとするのは筋が悪い。**普段お使いのブラウザで
+取ってきてもらう**ほうが正しく、そちらは大抵ログイン済みでもあります。
+
+失ったものが1つあります。**Claude のセッションを黙って延長する仕組み**です。
+あれはアプリ内ブラウザのプロファイルに乗っていたので、一緒に無くなりました。
+期限切れは利用者に伝わり、貼り直してもらうことになります。
 
 **このプロセスで QtWebEngine のオブジェクトを作らないでください。** ここには
 QApplication がありません。QWebEngineProfile などはその場でプロセスごと
 落ちることがあり、拡張からは「バックエンドが無言で死んだ」としか見えません。
 具体的には services.browser_profile を import しないこと (import しただけで
-QtWebEngineCore を引き込みます)。プロファイルが要る操作は gui_helper.py の担当です。
-**ただし、保存場所を知ることと消すことに Qt は要りません。** そのぶんは
-services.profile_storage に分けてあり (Qt を import しません)、削除で
-ログイン状態を捨てるときはこちらを使います。
+QtWebEngineCore を引き込みます)。**ただし、保存場所を知ることと消すことに
+Qt は要りません。** そのぶんは services.profile_storage に分けてあり
+(Qt を import しません)、削除で以前のログイン状態を捨てるときはこちらを
+使います。
 
 なお PySide6 が一切登場しないわけではありません。proxy_manager は
 QtNetwork を import します (ImportError は握って素通りします) が、
@@ -42,11 +58,8 @@ import json
 import logging
 import os
 import queue
-import subprocess
 import sys
-import tempfile
 import threading
-import time
 import traceback
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -140,13 +153,9 @@ def setup_logging():
     stderr は拡張側が出力チャンネルへ流します。**それだけでは足りません。**
     出力チャンネルは VSCode を閉じると消えるので、閉じたあとに
     「さっき失敗したときのログ」を読む手段がありませんでした。
-    gui_helper.py が想定外のエラーで出す案内 (「詳細は app.log を」) の
-    宛先でもあり、書き出しを止めていた間、あの案内は空振りしていました。
-
-    **app.log へ書くのはこのプロセスだけです。** gui_helper.py は別プロセス
-    ですが、あちらの stderr は run_gui_helper がこちらの logger へ流し込むので、
-    それでこのファイルに載ります。2つのプロセスから同じファイルを開くと、
-    Windows では世代交代 (rename) が相手に掴まれて失敗します。
+    **app.log へ書くのはこのプロセスだけです。** 2つのプロセスから同じ
+    ファイルを開くと、Windows では世代交代 (rename) が相手に掴まれて
+    失敗します。
     """
     level_name = (os.environ.get("AI_USAGE_MANAGER_LOGLEVEL") or "INFO").upper()
     handler = logging.StreamHandler(sys.stderr)
@@ -235,7 +244,7 @@ from services.providers import aoai_cost  # noqa: E402
 from services.config_manager import (                   # noqa: E402
     ConfigLoadError, ConfigManager, default_config_dir,
 )
-from services.providers import AUTH_COOKIE, AUTH_OAUTH, UsageError  # noqa: E402
+from services.providers import AUTH_OAUTH, UsageError  # noqa: E402
 from services.secret_store import is_encryption_available  # noqa: E402
 
 
@@ -257,26 +266,6 @@ class Backend:
         self._fetch_queue = queue.Queue()
         self._worker = threading.Thread(target=self._fetch_loop, daemon=True)
         self._stopping = False
-        # ログイン画面を開いている間は、その1つだけを走らせる。同じ設定
-        # ファイルを2つのダイアログが書き戻すと、後から閉じた方が
-        # 先の変更を消してしまう。
-        self._gui_lock = threading.Lock()
-        # 中止 (cancel_gui) の受け渡し。
-        #
-        # **_gui_lock とは別の錠が要ります。** あちらは利用者がログイン画面を
-        # 操作している間ずっと握られたままなので、中止を受け付けるために
-        # 取ろうとすると、まさに中止したい場面で待たされることになります。
-        # こちらは下の3つを読み書きする一瞬だけ握ります。
-        self._gui_state_lock = threading.Lock()
-        # 走っているヘルパーの Popen。掴んでおかないと外から終了させられません
-        # (subprocess.run では戻り値しか手に入らない)。
-        self._gui_process = None
-        # ヘルパーの起動を決めてから片付け終えるまで True。Popen を掴む前でも
-        # 中止を受け付けられるようにするための印です。
-        self._gui_running = False
-        # 中止を頼まれたか。**Popen を掴む前に届くことがあります。** その場合は
-        # run_gui_helper が起動直後にこれを見て、その場で終了させます。
-        self._gui_cancelled = False
 
     # ---------------- 設定 ----------------
 
@@ -308,9 +297,7 @@ class Backend:
     def delete_account(self, account_id: str) -> dict:
         """アカウントを1件消します。
 
-        **gui_helper.py は使いません。** 削除にログイン画面は要らないので、
-        PySide6 が入っていない環境でも消せるようにここで完結させます
-        (このファイル冒頭の説明を参照)。
+        **別ウィンドウは出ません** (このファイル冒頭の説明を参照)。
 
         戻り値は {"ok": True, "accountId": ...} か
         {"ok": False, "error": ...} です。**例外は投げません。**
@@ -344,6 +331,187 @@ class Backend:
         profile_storage.remove_profile(account.id)
         return {"ok": True, "accountId": account.id}
 
+    # 変更を頼まれていない項目の印。
+    #
+    # **None を使えません。** 「名前を変えない」と「名前を空にする」は
+    # 別の指示で、None をどちらかに割り当てると、もう片方を表せなく
+    # なります。params にキーが載っていなければ触らない、というのが
+    # ここの約束です。
+    _UNSET = object()
+
+    def update_account(self, params: dict) -> dict:
+        """アカウント1件の登録内容を書き換えます。
+
+        **別ウィンドウは出ません** (このファイル冒頭の説明を参照)。
+
+        **params に載っているキーだけを触ります。** 載っていなければ
+        「変えない」、空文字なら「空にする」です。資格情報を毎回
+        送らせない (送らなければ保存済みのものが残る) ためで、
+        デスクトップ版のダイアログが編集モードで欄を空のまま開くのと
+        同じ考え方です (ui/account_dialog.py の _effective_cookie)。
+
+        通す検証は ui/account_dialog.py の validate_inputs と同じもの、
+        同じ順序です。**入口が変わっても検証の中身は変えないでください。**
+        貼り間違いを拾えるかどうかが画面によって変わると、こちらから
+        入れた値だけが素通りします。
+
+        **きっかけだけは違います。** あちらは1画面で全項目を確定するので
+        全部を見ますが、こちらは1項目ずつ直すので、渡された項目だけを
+        見ます。触っていない項目の警告を出しても、直す手立てがその場に
+        ありません (名前を変えただけで Organization ID の書式を問われる)。
+
+        利用者に尋ねる必要のある警告 (「〜には見えません」) が出たときは
+        **保存せず** {"confirm": [...]} を返します。呼び出し側が尋ねて、
+        confirmed を立てて呼び直してください。デスクトップ版が既定を
+        「いいえ」にして尋ねているものを、こちらで黙って通さないためです。
+
+        戻り値は次のいずれかです。**例外は投げません。** 呼び出し側は
+        要求への応答を必ず1つ返す必要があるためです。
+
+            {"error": "..."}       … 保存できない
+            {"confirm": ["..."]}   … 尋ねてから呼び直してほしい
+            {"saved": True}        … 保存した
+        """
+        account = self.find(params.get("accountId") or "")
+        if account is None:
+            return {"error": t("The account was not found.")}
+
+        # --- 取得先 ---
+        # **最初に決めます。** ラベルも既定値も検証も、どの取得先かで
+        # 変わるためです。
+        provider_id = params.get("provider", self._UNSET)
+        if provider_id is self._UNSET:
+            provider_id = account.provider
+        else:
+            provider_id = (provider_id or "").strip()
+            if not providers.is_known(provider_id):
+                return {"error": t("Unknown provider: {id}", id=provider_id)}
+        switched = provider_id != account.provider
+        provider = providers.get(provider_id)
+
+        # --- 名前 ---
+        name = params.get("name", self._UNSET)
+        name = account.name if name is self._UNSET else (name or "").strip()
+        if not name:
+            return {"error": t("Enter an account name.")}
+
+        confirms = []
+
+        # --- 資格情報 ---
+        typed = params.get("credential", self._UNSET)
+        if typed is self._UNSET:
+            # **取得先を変えたなら持ち越しません** (追加フィールドや上限金額と
+            # 同じ理由です)。Claude の Cookie は Azure の API キーではないので、
+            # 持ち越すと一覧では「設定済み」に見えるのに取得は必ず失敗する、
+            # という状態になります。そのまま下の検査に落ちて、新しいものを
+            # 求められます。
+            credential = "" if switched else account.cookie
+        else:
+            typed = (typed or "").strip()
+            # **絞る前に見ること。** normalize_credential は貼り付け元が
+            # 伝えてきたエラーごと捨てるので、通したあとでは二度と読めません。
+            paste_warning = provider.validate_paste(typed) if typed else ""
+            credential = provider.normalize_credential(typed) if typed else ""
+            if typed:
+                if (provider.credential_marker
+                        and provider.credential_marker not in credential):
+                    confirms.append(t(
+                        "Nothing that looks like {marker}... was found in "
+                        "what you entered.", marker=provider.credential_marker))
+                warning = paste_warning or provider.validate_credential(credential)
+                if warning:
+                    confirms.append(warning)
+
+        # OAuth 系は別ツールのログイン状態を借りるので、ここに入れるものが無い。
+        #
+        # **触っていないなら通します。** 資格情報が空のまま保存されている
+        # アカウントは実在します — config.json を手で書き換えた場合と、
+        # 別の端末や別の Windows ユーザーから持ってきて復号できなかった
+        # 場合です (services/secret_store.py は復号できないと空文字を
+        # 返し、config_manager がそれを cookie に入れます)。そこで名前を
+        # 変えるだけの編集まで「Cookie を入力してください」で弾くと、
+        # **直す手立てがその場にありません。** 同じ有効/無効の切り替えが、
+        # 一覧からは通るのにこちらからは失敗する、ということにもなります。
+        #
+        # 断るのは「空にしようとしたとき」と「取得先を変えたのに新しいものが
+        # 無いとき」だけです。どちらも、そのまま保存すると使えないものが
+        # 残ります。
+        if (provider.auth_kind != AUTH_OAUTH and not credential
+                and (typed is not self._UNSET or switched)):
+            return {"error": t("Enter {credential}.",
+                               credential=t(provider.credential_label))}
+
+        # --- 追加フィールド ---
+        extra = params.get("extra", self._UNSET)
+        extra_supplied = extra is not self._UNSET
+        if not extra_supplied:
+            # **取得先を変えたら持ち越しません。** 同じ欄でも意味が変わる
+            # ため (Organization ID / エンドポイント URL)、持ち越すと URL を
+            # Organization ID として保存してしまいます。
+            extra = provider.extra_field_default if switched else account.organization_id
+        else:
+            extra = (extra or "").strip()
+        if not provider.uses_extra_field:
+            extra = ""
+        elif extra_supplied:
+            # **新しく入れられたときだけ確かめます。** 保存済みの値は過去に
+            # 一度この検証を通っているので、名前を変えるだけの編集で
+            # 触ってもいない項目の確認を出さないためです (資格情報と同じ)。
+            # 書式の判定はプロバイダに任せます (UUID なのか URL なのかは
+            # 取得先の事情で、ここが知っていてよいことではありません)。
+            warning = provider.validate_extra(extra)
+            if warning:
+                confirms.append(warning)
+
+        # --- 上限金額 ---
+        budget = params.get("budget", self._UNSET)
+        if budget is self._UNSET:
+            # **取得先を変えたら引き継ぎません。** 通貨が変わるため、
+            # JPY の 10000 を USD の上限として引き継ぐと桁が2つ違います。
+            budget = provider.default_budget if switched else account.budget
+        else:
+            try:
+                budget = float(budget)
+            except (TypeError, ValueError):
+                return {"error": t("The spending cap must be a number.")}
+            if budget < 0:
+                return {"error": t("The spending cap must be a number.")}
+        if not provider.supports_budget:
+            budget = 0.0
+
+        # --- 有効 / 無効 ---
+        enabled = params.get("enabled", self._UNSET)
+        enabled = account.enabled if enabled is self._UNSET else bool(enabled)
+
+        if confirms and not params.get("confirmed"):
+            # **まだ保存しません。** ここで通してしまうと、デスクトップ版が
+            # 既定「いいえ」で尋ねているものを黙って承諾したことになります。
+            return {"confirm": confirms}
+
+        kept = account.to_dict()
+        account.name = name
+        account.provider = provider.id
+        account.organization_id = extra
+        account.cookie = credential
+        account.budget = budget
+        account.enabled = enabled
+
+        if not self.save():
+            # **保存できなかったものを、変わったことにしません。** 手元だけ
+            # 変えると、画面には新しい値が出るのに config.json は元のままで、
+            # 次に読み直したときに戻ってきます (delete_account と同じ)。
+            for key, value in kept.items():
+                setattr(account, key, value)
+            return {"error": t(
+                "The settings could not be saved. See the log for details.")}
+
+        # 何を変えたかは残しますが、**資格情報そのものは残しません**
+        # (Account.__repr__ が伏せているのと同じ理由)。
+        logger.info("アカウントを更新しました: %s (取得先=%s, 資格情報の変更=%s)",
+                    account.name, account.provider,
+                    typed is not self._UNSET)
+        return {"saved": True}
+
     # ---------------- 直列化 ----------------
 
     @staticmethod
@@ -363,7 +531,6 @@ class Backend:
             "providerLabel": provider.label,
             "enabled": account.enabled,
             "implemented": provider.implemented,
-            "canRelogin": provider.auth_kind == AUTH_COOKIE,
             # プロバイダのクラス属性は訳す前の原文 (英語) です。画面へ渡す
             # ここが訳す場所になります (拡張側にはもう訳す手立てがありません)。
             "credentialLabel": t(provider.credential_label),
@@ -373,6 +540,92 @@ class Backend:
                            if provider.uses_extra_field else ""),
             "extra": account.organization_id if provider.uses_extra_field else "",
             "budget": account.budget,
+        }
+
+    def create_account(self, params: dict) -> dict:
+        """アカウントを1件作ります。**別ウィンドウは出ません。**
+
+        **検証は update_account に任せます。** 同じ規則を2箇所に書くと、
+        片方だけ直したときに「追加では通るのに編集では弾かれる」ような差が
+        生まれます。ここは器を1つ用意して、あとはあちらに通すだけです。
+
+        戻り値は update_account と同じ形で、保存できたときだけ accountId を
+        添えます。**例外は投げません。**
+        """
+        provider_id = (params.get("provider") or "").strip()
+        if not providers.is_known(provider_id):
+            return {"error": t("Unknown provider: {id}", id=provider_id)}
+        provider = providers.get(provider_id)
+
+        # **新規では資格情報を必ず求めます。** update_account は「載って
+        # いない項目は触らない」ので、資格情報を載せずに呼ぶと、空のまま
+        # 作れてしまいます。あちらがそうなっているのは、すでに空のまま
+        # 保存されているアカウント (config.json の手編集、復号の失敗) を
+        # 直せるようにするためで、**空のものを新しく増やす理由はありません。**
+        # 空で作れると、一覧に出るのに取得はできないアカウントができます。
+        if (provider.auth_kind != AUTH_OAUTH
+                and not (params.get("credential") or "").strip()):
+            return {"error": t("Enter {credential}.",
+                               credential=t(provider.credential_label))}
+
+        # 取得先ごとの既定値を入れた器を作ります。これを update_account に
+        # 渡すことで、**新規でも編集と同じ検証を通します。**
+        account = Account(
+            name="", organization_id=provider.extra_field_default, cookie="",
+            provider=provider.id,
+            budget=provider.default_budget if provider.supports_budget else 0.0,
+        )
+        self.accounts.append(account)
+
+        result = self.update_account(dict(params, accountId=account.id))
+        if not result.get("saved"):
+            # 検証に落ちた、または尋ね直しになった。**足したものを戻します。**
+            # 残すと、名前も資格情報も無いアカウントが一覧に居座ります。
+            self.accounts = [a for a in self.accounts if a.id != account.id]
+            return result
+
+        logger.info("アカウントを追加しました: %s (取得先=%s)",
+                    account.name, account.provider)
+        result["accountId"] = account.id
+        return result
+
+    @staticmethod
+    def provider_payload(provider, retired: bool = False) -> dict:
+        """取得先1つを、画面に出せる形へ直します。
+
+        **プロバイダのクラス属性は訳す前の原文 (英語) です。** 訳すのは
+        こうして画面へ渡す瞬間で、拡張側にはもう訳す手立てがありません
+        (account_payload と同じ約束)。
+
+        retired は「一覧から取り下げた取得先」の印です。**選択肢には
+        出しませんが、いま使っているアカウントがあるなら情報は要ります。**
+        引けないと、そのアカウントの編集画面がラベルも検証も出せません。
+        """
+        supports_budget = provider.supports_budget
+        return {
+            "id": provider.id,
+            "label": provider.label,
+            "description": t(provider.description) if provider.description else "",
+            "retired": retired,
+            "implemented": provider.implemented,
+            "needsCredential": provider.auth_kind != AUTH_OAUTH,
+            "credentialLabel": t(provider.credential_label),
+            "credentialHint": (t(provider.credential_hint)
+                               if provider.credential_hint else ""),
+            "usesExtraField": provider.uses_extra_field,
+            "extraLabel": (t(provider.extra_field_label)
+                           if provider.uses_extra_field else ""),
+            "extraHint": (t(provider.extra_field_hint)
+                          if provider.extra_field_hint else ""),
+            "supportsBudget": supports_budget,
+            "currency": provider.currency if supports_budget else "",
+            "currencySymbol": (providers.currency_symbol(provider.currency)
+                               if supports_budget else ""),
+            "defaultBudget": provider.default_budget if supports_budget else 0.0,
+            # 資格情報を、利用者が普段使っているブラウザから取ってくる
+            # 手順。**これが唯一の道です。** 画面はこれをそのまま出します。
+            "manualUrl": provider.manual_url,
+            "manualSteps": t(provider.manual_steps) if provider.manual_steps else "",
         }
 
     def is_fetchable(self, account: Account) -> bool:
@@ -451,28 +704,13 @@ class Backend:
                 reply_error(request_id, str(e), False)
                 return
 
-            # 失効していた。**いきなりログイン画面を出す前に、画面を出さない
-            # 復帰を1回だけ試します。** ブラウザプロファイルにログイン状態が
-            # 残っていることは多く、その場合は利用者が何もしなくても戻せます。
-            if not self.try_silent_refresh(account):
-                reply_error(request_id, str(e), True)
-                return
-
-            # ヘルパーが config.json を書き換えたので読み直しています。
-            # **掴み直さないと、古い方の Cookie を書き戻してしまいます。**
-            account = self.find(account_id)
-            if account is None:
-                reply_error(request_id, t(
-                    "The account was not found (the settings may have changed)."))
-                return
-            credential = account.cookie
-            organization_id = account.organization_id
-            try:
-                data = provider.fetch_usage(credential, organization_id)
-            except UsageError as e:
-                reply_error(request_id, str(e),
-                            bool(getattr(e, "auth_error", False)))
-                return
+            # 失効していた。**黙って復帰させる道はもうありません。**
+            # 以前はここでアプリ内ブラウザのプロファイルを使い、画面を出さずに
+            # Cookie を取り直していました。その仕組みは PySide6 (QtWebEngine)
+            # に乗ったものだったので、あれを外した時点で一緒に無くなりました。
+            # 利用者には期限切れとして伝わり、編集画面で貼り直してもらいます。
+            reply_error(request_id, str(e), True)
+            return
 
         # 取得中に判明した値を設定へ書き戻す。デスクトップ版の
         # on_fetch_success と同じ内容 (片方だけ更新されると、両方から
@@ -505,307 +743,6 @@ class Backend:
         data = usage_status.annotate(data)
 
         reply(request_id, {"accountId": account_id, "usage": data})
-
-    def try_silent_refresh(self, account) -> bool:
-        """失効した Cookie を、窓を出さずに取り直せないか1回だけ試します。
-
-        デスクトップ版の SessionRefresher の移植です。**ここでは Qt に触れ
-        ません** (このファイルの冒頭を参照)。窓を出さないだけで中身は
-        QtWebEngine なので、ほかのログイン操作と同じく gui_helper.py を
-        別プロセスで起動して任せます。
-
-        **ログイン画面が開いている間は試しません。** あちらは開いたときの
-        アカウント一覧を最後に丸ごと書き戻すので、その最中にこちらが
-        config.json を書くと、先に書いた方が消えます。錠 (begin_gui) を
-        取れなければ、今回は諦めて通常どおり失効として返します。
-
-        取れたかどうかだけを返します。新しい Cookie は gui_helper が
-        config.json へ書いているので、呼び出し元は読み直して拾います。
-        """
-        provider = account.get_provider()
-        if provider.auth_kind != AUTH_COOKIE or not provider.home_url:
-            return False
-        if not self.begin_gui():
-            logger.info("ログイン画面が開いているため、画面なしの復帰は見送ります。")
-            return False
-        try:
-            logger.info("'%s' の %s が失効しました。画面を出さずに取り直せないか試します。",
-                        account.name, provider.credential_label)
-            result = self.run_gui_helper("silent_refresh", account.id)
-        finally:
-            self.end_gui()
-
-        if not result.get("ok") or not result.get("changed"):
-            logger.info("画面なしでは戻せませんでした (account=%s, 状態=%s)。",
-                        account.id, result.get("status") or result.get("error"))
-            return False
-
-        logger.info("画面を出さずに '%s' の %s を取り直しました。",
-                    account.name, provider.credential_label)
-        # ヘルパーが書いた config.json を読み直す。
-        self.load()
-        return True
-
-    # ---------------- ブラウザ画面が要る操作 ----------------
-
-    def begin_gui(self) -> bool:
-        """ログイン画面の操作を1つ始めてよいかを決め、始めるなら印を立てます。
-
-        **必ず読み取りループのスレッドから、要求が届いた順のまま呼んでください。**
-        錠を取るのを gui_operation の中 (別スレッド) に置いていた時期があり、
-        add_account の直後に届いた cancel_gui が「中止できる操作はありません」と
-        言って素通りする取りこぼしがありました。中止はまさに「押してすぐ」
-        届くものなので、要求を捌く順番のまま印が立っていないと、この隙間は
-        必ず突かれます。
-
-        始められないとき (すでに1つ走っている) は False を返します。**待ちません。**
-        あちらは利用者がログイン画面を操作している数分間ずっと錠を持つので、
-        待つ作りにすると、その間この要求が返らないまま拡張側が固まります。
-        """
-        if not self._gui_lock.acquire(blocking=False):
-            return False
-        with self._gui_state_lock:
-            self._gui_running = True
-            self._gui_process = None
-            self._gui_cancelled = False
-        return True
-
-    def end_gui(self) -> None:
-        """begin_gui() で立てた印を片付け、錠を返します。
-
-        **必ず finally から呼ぶこと。** 返し忘れると、以後の追加・編集・
-        再ログインが全部「別の操作が進行中です」で弾かれ続けます。
-        """
-        with self._gui_state_lock:
-            self._gui_running = False
-            self._gui_process = None
-            self._gui_cancelled = False
-        self._gui_lock.release()
-
-    def gui_in_progress(self) -> bool:
-        """ログイン画面の操作が1つ走っているか。
-
-        **削除の可否を決めるのに使います。** ログイン画面は開いた時点の
-        アカウント一覧を丸ごと抱えていて、閉じるときにそれを書き戻します。
-        その最中にこちらが1件消しても、あとから上書きされて戻ってきます。
-        """
-        with self._gui_state_lock:
-            return self._gui_running
-
-    def run_gui_helper(self, mode: str, account_id: str = "") -> dict:
-        """gui_helper.py を別プロセスで起動し、終わるまで待ちます。
-
-        **begin_gui() で場所を取ってから呼びます** (取るのは呼び出し側の
-        仕事です。理由は begin_gui の説明を参照)。
-
-        **待ち時間に上限を設けません。** 利用者がログイン画面で操作している
-        時間そのものなので、こちらの都合で打ち切ると、ログインし終えた頃には
-        結果が捨てられていた、ということになります。打ち切ってよいのは
-        利用者自身が中止したときだけで、その入口が cancel_gui です。
-
-        **subprocess.run ではなく Popen + communicate() で書いています。**
-        run() は終わるまで Popen を返さないので、走っているプロセスを外の
-        スレッドから終了させる手段がありません。ウィンドウを一つも作らない
-        まま固まった子プロセスが実際にあり、その状態では中止するしか
-        利用者に打つ手がないため、掴める形にしてあります。communicate() にも
-        timeout は渡しません (上と同じ理由)。
-
-        受け渡しはファイル経由です。QtWebEngine (Chromium) は Python の
-        sys.stdout を経由せず OS のファイル記述子へ直接書くことがあり、
-        標準出力に混ざると結果を読めなくなります。
-        """
-        script = os.path.join(_HERE, "gui_helper.py")
-        if not os.path.exists(script):
-            return {"ok": False,
-                    "error": t("The helper was not found: {path}", path=script)}
-
-        python = os.environ.get("AI_USAGE_MANAGER_GUI_PYTHON") or sys.executable
-
-        handle, result_path = tempfile.mkstemp(prefix="aiusage-gui-", suffix=".json")
-        os.close(handle)
-        try:
-            command = [python, "-u", script, mode, "--result", result_path]
-            if account_id:
-                command += ["--id", account_id]
-            logger.info("ログイン画面を開きます: %s", " ".join(command))
-
-            try:
-                process = subprocess.Popen(
-                    # 作業ディレクトリを拡張の中に置かない (backend.js の spawn と
-                    # 同じ理由: Windows では掴んだフォルダを rename できず、
-                    # 拡張の更新・アンインストールが失敗する)。
-                    command, cwd=tempfile.gettempdir(),
-                    # **標準入力は必ず切り離します (既定の None にしないこと)。**
-                    #
-                    # 既定では子がこちらの標準入力をそのまま引き継ぎます。それは
-                    # 拡張ホストから要求が流れてくるパイプそのもので、渡してよい
-                    # ものではありません。ヘルパーは標準入力を読みませんが、
-                    # 「読まないから害はない」とは言えません:
-                    #
-                    #   1. 実測では、これを引き継がせると子が Qt の初期化まで
-                    #      到達せずに止まります (ワーキングセット 9.5MB、CPU
-                    #      0.03 秒、ウィンドウなし)。当時ここを通っていた、窓を
-                    #      出さない削除でも再現し、DEVNULL にすると再現しなく
-                    #      なります。
-                    #   2. 仮に止まらなくても、要求の JSON が流れているパイプを
-                    #      2 つのプロセスが読める状態にしてはいけません。1 バイト
-                    #      でも子に渡ると、こちらはフレームを失います。
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    text=True, encoding="utf-8", errors="replace",
-                    env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
-                )
-            except OSError as e:
-                return {"ok": False,
-                        "error": t("The sign-in window could not be started "
-                                   "({python}): {reason}", python=python, reason=e)}
-
-            with self._gui_state_lock:
-                self._gui_process = process
-                cancel_now = self._gui_cancelled
-
-            # **起動したことをここで1つだけ知らせます。** 拡張側はこれを見て
-            # 「ウィンドウの準備をしています」から「別ウィンドウで操作して
-            # ください」へ進めます。起動もしていないうちからそう案内すると、
-            # まだ存在しない窓を探させることになります。
-            # (窓が出たことの保証ではありません。それはこちらからは分かりません。)
-            notify("gui_started", {"mode": mode, "accountId": account_id,
-                                   "pid": process.pid})
-
-            if cancel_now:
-                # 起動する前に中止が届いていた。ここで拾わないと、誰も
-                # 止められないプロセスが1つ残ります。
-                logger.info("起動前に中止されていたため、すぐ終了させます。")
-                self._kill_gui_process(process)
-
-            stdout_text, stderr_text = process.communicate()
-            for stream, label in ((stdout_text, "out"), (stderr_text, "err")):
-                for line in (stream or "").splitlines():
-                    if line.strip():
-                        logger.info("[gui:%s] %s", label, line)
-
-            with self._gui_state_lock:
-                cancelled = self._gui_cancelled
-
-            if cancelled:
-                # **結果ファイルは読みません。** 利用者がやめると言った以上、
-                # 中途半端に書かれていたものを採用する理由がありません。
-                return {"ok": True, "cancelled": True}
-
-            try:
-                with open(result_path, encoding="utf-8") as f:
-                    return json.load(f)
-            except (OSError, ValueError):
-                return {
-                    "ok": False,
-                    "error": t(
-                        "The sign-in window process exited without leaving a "
-                        "result (exit code {code}). "
-                        'Run "AI-UsageManager: Show Log" to see the details.',
-                        code=process.returncode,
-                    ),
-                }
-        finally:
-            # 印と錠の片付けは end_gui() (gui_operation の finally) の担当です。
-            # ここで消すと、まだ応答を返していないうちに次の操作を受け付けて
-            # しまいます。ここで片付けるのは自分で作った一時ファイルだけ。
-            try:
-                os.remove(result_path)
-            except OSError:
-                pass
-
-    @staticmethod
-    def _kill_gui_process(process) -> None:
-        """ログイン画面のプロセスを終了させます。
-
-        **終了要求 (terminate) だけでは足りないことがあります。** 相手は
-        QtWebEngine を抱えていて、固まっているときは要求を処理する
-        イベントループが回っていません。Windows の terminate() は
-        TerminateProcess なのでそれでも効きますが、POSIX の SIGTERM は
-        握り潰されうるので、少し待って残っていれば kill() します。
-
-        **communicate() で待っているスレッドはそのままです。** プロセスが
-        消えればパイプが閉じ、あちらは自然に返ります。こちらから
-        wait() を呼んで待ち合わせに割り込む必要はありません。
-        """
-        try:
-            process.terminate()
-        except OSError as e:
-            # すでに終わっている場合もここへ来る。残っていれば下の poll で拾う。
-            logger.warning("ログイン画面のプロセスに終了を要求できませんでした: %s", e)
-
-        # 3 秒。人が待つ時間ではなく、OS がプロセスを畳む時間なので短くてよい。
-        for _ in range(30):
-            if process.poll() is not None:
-                return
-            time.sleep(0.1)
-
-        logger.warning("終了要求に応じないため強制終了します (pid=%s)。", process.pid)
-        try:
-            process.kill()
-        except OSError as e:
-            logger.warning("強制終了できませんでした: %s", e)
-
-    def cancel_gui(self) -> dict:
-        """走っているログイン画面のプロセスを終了させます。
-
-        **_gui_lock は取りません。** あの錠はログイン画面を開いている間
-        ずっと握られたままなので、中止のために取ろうとすると、まさに中止
-        したい場面で永久に待つことになります。守る対象も違います
-        (あちらは config.json、こちらは Popen の受け渡しだけ)。
-
-        待っている add_account 等への応答はここでは返しません。kill された
-        gui_operation 側が「中止されました」として返します。要求ひとつに
-        応答ひとつ、という約束を崩さないためです。
-        """
-        with self._gui_state_lock:
-            if not self._gui_running:
-                return {"cancelled": False,
-                        "message": t("There is no operation to cancel.")}
-            self._gui_cancelled = True
-            process = self._gui_process
-
-        if process is None:
-            # 起動を決めてから Popen を掴むまでの隙間。印だけ残しておけば、
-            # run_gui_helper が掴んだ直後に終了させます。
-            logger.info("ログイン画面の起動前に中止を受け付けました。")
-            return {"cancelled": True, "message": t("Cancelled.")}
-
-        logger.info("ログイン画面を中止します (pid=%s)。", process.pid)
-        self._kill_gui_process(process)
-        return {"cancelled": True, "message": t("Cancelled.")}
-
-    def gui_operation(self, request_id, mode: str, account_id: str = ""):
-        """ヘルパーを走らせ、終わったら設定を読み直して結果を返します。
-
-        **呼ぶ前に begin_gui() が True を返していること** (錠を取るのは
-        読み取りループのスレッドの仕事です。理由は begin_gui の説明を参照)。
-
-        中止 (cancel_gui) されたときも、ここは**必ず応答を返します。**
-        返さずに黙って抜けると、拡張側は要求を投げたまま待ち続け、
-        「中止したのに通知が消えない」という元の症状に戻ります。
-        中止は失敗ではないので、キャンセルされたダイアログと同じく
-        cancelled を立てた snapshot として返します。
-        """
-        try:
-            result = self.run_gui_helper(mode, account_id)
-        finally:
-            # 中止されて途中で抜けても、ここを通って必ず解放します。握った
-            # ままにすると、以後の追加・編集・再ログインが全部弾かれます。
-            self.end_gui()
-
-        if not result.get("ok"):
-            reply_error(request_id, result.get("error") or t("The operation failed."))
-            return
-
-        # ヘルパーが config.json を書き換えているので、必ず読み直す。
-        # 読み直さないと、こちらの手元は操作前のままになる。
-        self.load()
-
-        snapshot = self.snapshot()
-        snapshot["cancelled"] = bool(result.get("cancelled"))
-        snapshot["accountId"] = result.get("accountId", "")
-        reply(request_id, snapshot)
 
 
 # ---------------------------------------------------------------------------
@@ -849,7 +786,11 @@ def _test_proxy_connection() -> tuple:
         return False, t(
             "An SSL error occurred. If a corporate proxy inspects traffic, "
             "point the REQUESTS_CA_BUNDLE environment variable at its CA "
-            "certificate.\n\n{reason}", reason=e)
+            "certificate. The value comes from the environment this process "
+            "was started with, so set it first and then start the editor "
+            "again — setting it while the editor is running does not reach "
+            "here, not even after restarting the backend.\n\n{reason}",
+            reason=e)
     except requests.RequestException as e:
         return False, t("The connection failed.\n\n{reason}", reason=e)
 
@@ -1001,8 +942,7 @@ class Dispatcher:
     def do_test_proxy(self, request_id, params):
         """接続テスト。**読み取りループでは待ちません。**
 
-        最大20秒かかるので、ここで待つとその間ほかの要求が一切通りません
-        (_start_gui と同じ理由です)。
+        最大20秒かかるので、ここで待つとその間ほかの要求が一切通りません。
         """
         threading.Thread(
             target=self._test_proxy_worker, args=(request_id,), daemon=True,
@@ -1018,64 +958,15 @@ class Dispatcher:
             return
         reply(request_id, {"reachable": reachable, "message": message})
 
-    # ---- ブラウザ画面が要る操作 ----
-
-    def _start_gui(self, request_id, mode: str, account_id: str = ""):
-        """ヘルパーの完了を別スレッドで待ちます。
-
-        **読み取りループを止めないこと。** ここで待つと、利用者がログイン画面を
-        開いている数分間、一覧の取得を含むほかの要求が一切通らなくなります。
-
-        **場所取り (begin_gui) だけはこのスレッドで、スレッドを起こす前に
-        済ませます。** 向こう側に任せると、直後に届いた cancel_gui が
-        「中止できる操作はありません」と言って素通りします (begin_gui の
-        説明を参照)。
-        """
-        if not self.backend.begin_gui():
-            reply_error(request_id, t(
-                "Another sign-in operation is in progress. "
-                "Finish that one first."))
-            return
-
-        try:
-            threading.Thread(
-                target=self.backend.gui_operation,
-                args=(request_id, mode, account_id),
-                daemon=True,
-            ).start()
-        except RuntimeError as e:
-            # スレッドを作れなかった。取った場所をここで返さないと、以後の
-            # ログイン操作が全部「別の操作が進行中です」で弾かれ続けます。
-            self.backend.end_gui()
-            reply_error(request_id, t(
-                "The sign-in operation could not be started: {reason}", reason=e))
-
-    def do_add_account(self, request_id, params):
-        self._start_gui(request_id, "add")
-
-    def do_edit_account(self, request_id, params):
-        self._start_gui(request_id, "edit", params.get("accountId") or "")
-
-    def do_relogin(self, request_id, params):
-        self._start_gui(request_id, "relogin", params.get("accountId") or "")
+    # ---- アカウントの登録内容を変える操作 ----
 
     def do_delete_account(self, request_id, params):
         """アカウントを1件消します。
 
-        **ここだけは _start_gui を通しません。** 追加・編集・再ログインは
-        ログイン画面が要るので PySide6 も要りますが、削除に窓は要りません。
-        以前はこれも同じ道を通していたため、PySide6 が入っていない環境では
-        「PySide6 を入れてください」と言われ、拡張の中だけではアカウントを
-        消せませんでした。
-
-        **ログイン画面が開いている間は断ります** (gui_in_progress の説明)。
+        **別ウィンドウは出ません。** 以前はここも PySide6 製のログイン画面を
+        経由していたため、あれが入っていない環境ではアカウントを消すことすら
+        できませんでした。
         """
-        if self.backend.gui_in_progress():
-            reply_error(request_id, t(
-                "Another sign-in operation is in progress. "
-                "Finish that one first."))
-            return
-
         result = self.backend.delete_account(params.get("accountId") or "")
         if not result.get("ok"):
             reply_error(request_id, result["error"])
@@ -1085,19 +976,70 @@ class Dispatcher:
         snapshot["accountId"] = result["accountId"]
         reply(request_id, snapshot)
 
-    def do_cancel_gui(self, request_id, params):
-        """進行中のログイン画面を終了させます。
+    def do_create_account(self, request_id, params):
+        """アカウントを1件作ります。**別ウィンドウは出ません。**
 
-        **通知を閉じるだけでは足りないので、拡張から呼ばれます。** 子プロセスが
-        ウィンドウを一つも作らないまま固まることがあり、放っておくと
-        _gui_lock を握り続けて、以後の追加・編集・再ログインが全部
-        「別の操作が進行中です」で弾かれ続けます。
-
-        **この応答はすぐ返します。** 読み取りループのスレッドで動くので、
-        ここで待つと中止の要求そのものが届かなくなります (実際に待つのは
-        _kill_gui_process の中の数百ミリ秒だけ)。
+        **これが唯一の道です。** 窓を開いて作る道はもうありません。資格情報は
+        利用者が普段のブラウザから取ってきて、拡張の画面へ貼ります。
         """
-        reply(request_id, self.backend.cancel_gui())
+        result = self.backend.create_account(params or {})
+        if result.get("error"):
+            reply_error(request_id, result["error"])
+            return
+        if result.get("confirm"):
+            reply(request_id, {"confirm": result["confirm"]})
+            return
+
+        snapshot = self.backend.snapshot()
+        snapshot["accountId"] = result.get("accountId", "")
+        reply(request_id, snapshot)
+
+    def do_list_providers(self, request_id, params):
+        """選べる取得先の一覧を返します。
+
+        params["include"] に取得先 ID を並べると、一覧から取り下げたもの
+        (services/providers の _RETIRED) の情報も返します。**いまそれを
+        使っているアカウントを編集するのに要ります。** 返さないと、その
+        アカウントのラベルも検証も引けません。選択肢に出すかどうかは
+        retired を見て拡張側が決めます。
+        """
+        listed = list(providers.all_providers())
+        known = {p.id for p in listed}
+        payload = [self.backend.provider_payload(p) for p in listed]
+        for provider_id in (params or {}).get("include") or []:
+            provider_id = (provider_id or "").strip()
+            if not provider_id or provider_id in known:
+                continue
+            known.add(provider_id)
+            # **知らない ID でも返します。** 設定ファイルを手で書き換えた等で
+            # 一覧に無い ID が入っていることがあり、返さないと編集画面が
+            # ラベルすら出せません。providers.get() が既定へ倒したものを、
+            # **要求された ID のまま**返します。id を書き換えると、拡張側が
+            # そのアカウントの取得先として引けなくなります。
+            info = self.backend.provider_payload(
+                providers.get(provider_id), retired=True)
+            info["id"] = provider_id
+            payload.append(info)
+        reply(request_id, {"providers": payload})
+
+    def do_update_account(self, request_id, params):
+        """アカウント1件の登録内容を書き換えます。
+
+        **別ウィンドウは出ません** (do_delete_account と同じ)。
+        """
+        result = self.backend.update_account(params or {})
+        if result.get("error"):
+            reply_error(request_id, result["error"])
+            return
+        if result.get("confirm"):
+            # **保存していません。** 尋ねてから confirmed を立てて呼び直す
+            # 番です (update_account の説明を参照)。
+            reply(request_id, {"confirm": result["confirm"]})
+            return
+
+        snapshot = self.backend.snapshot()
+        snapshot["accountId"] = params.get("accountId") or ""
+        reply(request_id, snapshot)
 
     def do_shutdown(self, request_id, params):
         reply(request_id, {})

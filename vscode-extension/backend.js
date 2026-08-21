@@ -20,10 +20,9 @@ const { language, t } = require('./i18n');
  *
  * 実測で 4.3 秒／18.4 秒。**成功パスでは1ミリ秒も払いません** — ここを通るのは
  * すでに起動に失敗したときだけです。15 秒にしているのは、よくある側 (4 秒台) を
- * 確実に拾いつつ、「起動できませんでした」を利用者へ返すまでの遅れを、
- * ログイン画面の案内 (extension.js の GUI_STUCK_HINT_MS = 20 秒) より短く保つ
- * ためです。取り逃がしても pythonExtPromise は残るので、次の操作 (更新ボタン)
- * では待ち時間ゼロで拾えます。
+ * 確実に拾いつつ、利用者を待たせすぎないためです。取り逃がしても
+ * pythonExtPromise は残るので、次の操作 (更新ボタン) では待ち時間ゼロで
+ * 拾えます。
  */
 const PYTHON_EXT_FALLBACK_MS = 15000;
 
@@ -66,13 +65,57 @@ class BackendError extends Error {
  * @property {string} providerLabel
  * @property {boolean} enabled
  * @property {boolean} implemented この取得先の使用状況取得が実装済みか
- * @property {boolean} canRelogin ブラウザでのログインに対応しているか
  * @property {string} credentialLabel 「セッションキー」「API キー」など
  * @property {boolean} needsCredential
  * @property {boolean} hasCredential
  * @property {string} extraLabel 組織 ID などの追加項目の名前 (無ければ空)
  * @property {string} extra
  * @property {number} budget 利用者が決めた上限金額 (0 で未設定)
+ */
+
+/**
+ * 取得先1つ分の性質。**アカウントではなく取得先そのものの話です。**
+ *
+ * ラベルも入力例も検証も取得先ごとに違うので、編集画面はここを見て
+ * 「何を尋ねるか」を決めます。訳し終えた文字列が入っています
+ * (訳すのはバックエンド側。cli.py の provider_payload を参照)。
+ *
+ * @typedef {object} ProviderInfo
+ * @property {string} id
+ * @property {string} label
+ * @property {string} description 1行の説明
+ * @property {boolean} retired 一覧から取り下げた取得先か。**選択肢に出さないこと。**
+ *   いまそれを使っているアカウントを編集できるよう、情報だけ返っています。
+ * @property {boolean} implemented
+ * @property {boolean} needsCredential
+ * @property {string} credentialLabel
+ * @property {string} credentialHint 入力欄に出す例
+ * @property {boolean} usesExtraField
+ * @property {string} extraLabel
+ * @property {string} extraHint
+ * @property {boolean} supportsBudget
+ * @property {string} currency
+ * @property {string} currencySymbol
+ * @property {number} defaultBudget
+ * @property {string} manualUrl 資格情報を手で取ってくるときに開く URL (無ければ空)
+ * @property {string} manualSteps そこで何をするか (1行1手順)
+ */
+
+/**
+ * 登録内容の書き換え依頼。**載せたキーだけが変わります。**
+ *
+ * 「変えない」と「空にする」は別の指示なので、変えないものは載せないで
+ * ください (undefined を入れても JSON になる時点で消えるので同じです)。
+ *
+ * @typedef {object} AccountUpdate
+ * @property {string} accountId
+ * @property {string} [name]
+ * @property {string} [provider] 変えると extra と budget が取得先の既定に戻ります
+ * @property {string} [extra]
+ * @property {string} [credential] 載せなければ保存済みのものが残ります
+ * @property {number} [budget]
+ * @property {boolean} [enabled]
+ * @property {boolean} [confirmed] 尋ねられた警告を承知のうえで保存するか
  */
 
 /**
@@ -85,11 +128,7 @@ class BackendError extends Error {
  * @property {string} configDir
  * @property {string|null} loadError 設定ファイルを読めなかった理由
  * @property {boolean} encryptionAvailable 資格情報を暗号化して保存できるか
- * @property {boolean} [cancelled] ログイン画面を伴う操作の応答にだけ載る。
- *   利用者が中止したか (cli.py の gui_operation 参照)。**いまの JS はこれを
- *   読んでいません** — 中止の判定は extension.js の runGuiCommand が
- *   token.onCancellationRequested で持っています。
- * @property {string} [accountId] 同上。追加・編集の対象になったアカウント。
+ * @property {string} [accountId] 追加・編集の対象になったアカウント。
  */
 
 /**
@@ -145,24 +184,11 @@ class Backend {
         this._onFetching = new vscode.EventEmitter();
         /** ある口座の取得が実際に始まった (キューから出た) タイミング。 */
         this.onFetching = this._onFetching.event;
-
-        /** @type {vscode.EventEmitter<void>} */
-        this._onGuiStarted = new vscode.EventEmitter();
-        /**
-         * ログイン画面のプロセスが起動した。
-         *
-         * **ウィンドウが出たことの保証ではありません。** バックエンドに
-         * 分かるのは子プロセスを起こしたところまでで、実際に窓を作らないまま
-         * 固まる例が出ています。それでも合図が要るのは、これが来るまでは
-         * 「別ウィンドウで操作してください」と案内すべきではないためです。
-         */
-        this.onGuiStarted = this._onGuiStarted.event;
     }
 
     dispose() {
         this.disposed = true;
         this._onFetching.dispose();
-        this._onGuiStarted.dispose();
         this.kill();
     }
 
@@ -380,14 +406,6 @@ class Backend {
         return '';
     }
 
-    /** @returns {string} */
-    guiPython() {
-        return vscode.workspace
-            .getConfiguration('aiUsageManager')
-            .get('guiPythonPath', '')
-            .trim();
-    }
-
     /**
      * @param {string} python
      * @param {string} script
@@ -552,17 +570,10 @@ class Backend {
                         // 日本語のメッセージが cp932 で化けないようにする
                         PYTHONIOENCODING: 'utf-8',
                         PYTHONUTF8: '1',
-                        // ログイン画面 (PySide6) を動かす Python。空なら
-                        // バックエンドと同じものを使う。表示・更新だけの
-                        // Python と、PySide6 入りの Python を分けられるように
-                        // するための逃げ道。
-                        AI_USAGE_MANAGER_GUI_PYTHON: this.guiPython(),
                         // バックエンドの表示言語。**これが唯一の伝え方です。**
                         // メトリクスのラベル・状態の要約・エラー文は Python が
                         // 確定させて返すので (services/usage_status.py)、
                         // 拡張だけを訳しても画面の半分は元の言語のまま出ます。
-                        // cli.py はログイン画面のプロセスを os.environ ごと
-                        // 渡して起動するため、PySide6 のダイアログにもここから伝わります。
                         //
                         // **渡せるのは spawn するこの瞬間だけです。** Python 側は
                         // import した時点で言語を確定させます (services/i18n.py の
@@ -713,13 +724,6 @@ class Backend {
             if (message.event === 'fetching' && message.data?.accountId) {
                 this._onFetching.fire(String(message.data.accountId));
             }
-            if (message.event === 'gui_started') {
-                // pid はログにだけ残します。固まったときに、どのプロセスを
-                // 見ればよいかが分かる唯一の手がかりになります。
-                this.log.appendLine(
-                    `[backend] ログイン画面のプロセスを起動しました (pid=${message.data?.pid})`);
-                this._onGuiStarted.fire();
-            }
             return undefined;
         }
 
@@ -777,51 +781,50 @@ class Backend {
     }
 
     /**
-     * ログイン用のブラウザ画面を伴う操作。
+     * 登録内容を書き換えます。**別ウィンドウは出ません。**
      *
-     * 利用者がダイアログを操作している間ずっと返ってきません。**時間制限を
-     * 設けないでください。** 途中で諦めると、利用者がログインを終えた頃には
-     * 拡張側が結果を捨てており、「操作したのに反映されない」ことになります。
+     * 渡したキーだけが変わります (載っていないものは触りません)。詳しくは
+     * backend/cli.py の update_account を参照してください。
      *
-     * @returns {Promise<Snapshot>}
+     * 尋ねるべき警告が出たときは**保存されず**、{ confirm: [...] } が
+     * 返ります。利用者に尋ねてから confirmed: true で呼び直してください。
+     * 黙って通すと、デスクトップ版が既定「いいえ」で尋ねているものを、
+     * こちらからだけ素通しすることになります。
+     *
+     * @param {AccountUpdate} changes
+     * @returns {Promise<Snapshot|{confirm: string[]}>} 尋ねる必要が
+     *   あったときは confirm だけが返ります (**スナップショットは
+     *   返りません。保存していないので**)。
      */
-    addAccount() {
-        return this.call('add_account');
+    updateAccount(changes) {
+        return this.call('update_account', changes);
     }
 
     /**
-     * 進行中のログイン画面を強制的に終了させます。
+     * アカウントを1件作ります。**別ウィンドウは出ません。**
      *
-     * **通知を閉じるだけでは足りません。** 子プロセスがウィンドウを一つも
-     * 作らないまま固まることがあり、そのまま放置すると、バックエンド側の
-     * 錠を握ったプロセスが残って以後の追加・編集・再ログインが全部
-     * 「別の操作が進行中です」で弾かれます。実際に終了させるのは
-     * バックエンドの仕事なので、こちらからは頼むだけです。
+     * confirm の扱いは updateAccount と同じで、尋ねる必要があったときは
+     * **作らずに** confirm だけが返ります。作れたときは accountId が載ります。
      *
-     * 待っている addAccount() 等への応答はこれとは別に返ります (中止された
-     * 旨を載せた snapshot)。**この呼び出しの完了を、あちらが返ってきた
-     * 合図として扱わないでください。**
-     *
-     * @returns {Promise<{cancelled: boolean, message: string}>}
+     * @param {object} changes create_account に渡す内容
+     * @returns {Promise<Snapshot & {accountId?: string, confirm?: string[]}>}
      */
-    cancelGui() {
-        return this.call('cancel_gui');
+    createAccount(changes) {
+        return this.call('create_account', changes);
     }
 
     /**
-     * @param {string} accountId
-     * @returns {Promise<Snapshot>}
+     * 選べる取得先の一覧を読みます。
+     *
+     * include に取得先 ID を並べると、一覧から取り下げたものの情報も
+     * 返ります (retired が立ちます)。**いまそれを使っているアカウントを
+     * 編集するのに要ります。**
+     *
+     * @param {string[]} [include]
+     * @returns {Promise<{providers: ProviderInfo[]}>}
      */
-    editAccount(accountId) {
-        return this.call('edit_account', { accountId });
-    }
-
-    /**
-     * @param {string} accountId
-     * @returns {Promise<Snapshot>}
-     */
-    relogin(accountId) {
-        return this.call('relogin', { accountId });
+    listProviders(include = []) {
+        return this.call('list_providers', { include });
     }
 
     /**
