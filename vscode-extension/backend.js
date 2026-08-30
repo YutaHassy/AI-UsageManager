@@ -128,6 +128,8 @@ class BackendError extends Error {
  * @property {string} configDir
  * @property {string|null} loadError 設定ファイルを読めなかった理由
  * @property {boolean} encryptionAvailable 資格情報を暗号化して保存できるか
+ * @property {string[]} accountOrder 画面に出す並び (accountId)。**accounts の
+ *   並びとは別物です** — あちらは「追加した順」で、こちらは利用者が決めた順です。
  * @property {string} [accountId] 追加・編集の対象になったアカウント。
  */
 
@@ -856,6 +858,18 @@ class Backend {
      */
     setEnabled(accountId, enabled) {
         return this.call('set_enabled', { accountId, enabled });
+    }
+
+    /**
+     * 画面に出す並び順を保存します。**accounts 配列は動きません** —
+     * あちらの格納順そのものが「追加した順」の唯一の記録なので、書き換えると
+     * その基準に戻せなくなります (backend/cli.py の reorder_accounts を参照)。
+     *
+     * @param {string[]} order accountId を並べたもの
+     * @returns {Promise<Snapshot>}
+     */
+    reorderAccounts(order) {
+        return this.call('reorder_accounts', { order });
     }
 
     // ---------------- プロキシ設定 ----------------

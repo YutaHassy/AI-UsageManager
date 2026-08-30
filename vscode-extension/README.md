@@ -101,6 +101,12 @@ Click the gauge icon in the activity bar and the usage table opens **as an
 editor tab**, not in the sidebar. It is a wide table; squeezed into a narrow
 panel the quota names and bars become unreadable.
 
+It opens **in a group beside the active editor**, so it does not cover the file
+you opened it to look at. Set `aiUsageManager.openLocation` to `active` and it
+opens in the same group as the active editor instead, the way it did before
+1.8.0. Either way, a tab you have moved somewhere yourself stays where you put
+it — this only decides where a new one appears.
+
 Clicking the status bar item opens the same tab.
 
 ## Commands
@@ -120,6 +126,9 @@ All commands are under the `AI-UsageManager` category in the Command Palette.
 | `Show Log` | Shows the backend log in an output channel |
 | `Restart Backend` | Recreates the Python process |
 | `Language` | Picks the display language |
+| `Sort Accounts` | Picks how the account list is ordered |
+| `Zoom In` | Makes the usage tab one step larger |
+| `Zoom Out` | Makes the usage tab one step smaller |
 | `Set Proxy Password` | Sets or clears the proxy password (stored encrypted, never in settings.json) |
 | `Test Proxy Connection` | Tries to reach the network with the current proxy settings |
 | `Import Proxy From Environment Variables` | Fills the proxy host/port settings from `HTTP_PROXY` / `HTTPS_PROXY` |
@@ -128,12 +137,43 @@ Add, edit, delete and sign-in-again are also available as buttons in the view.
 Add, edit and sign-in-again all open the same form; the last is just the name
 the button takes when a credential has expired.
 
+## Sizing and ordering the table
+
+The table is meant to be read in a split, beside whatever you are working on,
+so it can be resized and its rows can be put in the order you care about.
+Both choices are remembered and are there again the next time you open it.
+
+| What | How |
+| --- | --- |
+| Zoom in / out | The `−` and `＋` buttons in the toolbar, `Ctrl+Mouse wheel` over the table, or `Ctrl+ +` / `Ctrl+ -` while the tab is focused |
+| Back to actual size | Click the `100%` label between those two buttons |
+| Move one row | Drag the `≡` handle at the right of the row, or focus the row and press `Alt+Up` / `Alt+Down` |
+| Sort by a criterion | `⇅` in the toolbar: highest usage first, by name, by provider, in the order they were added, or the order you arranged by hand |
+
+**Everything scales together** — text, gauges, padding and the fixed-width
+columns. The table is read by comparing bar lengths across rows, so a font that
+grows while its column does not is a table that no longer lines up.
+
+**Choosing a criterion does not throw away the order you arranged by hand.** It
+is kept in `config.json` and comes back when you switch back to it. Dragging a
+row while a criterion is active switches to the manual order and keeps the
+arrangement you were looking at, with the moved row where you dropped it.
+
+`Ctrl+ +` and `Ctrl+ -` are taken over from VS Code's own window zoom while the
+usage tab is focused, and released as soon as you move to another tab. Zoom and
+drag-to-reorder were verified on VS Code 1.135; the extension installs on 1.85
+and later, and on a much older version the scaled layout may not look the way
+it does here.
+
 ## Settings
 
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `aiUsageManager.pythonPath` | `""` | The Python that runs the backend. Empty means auto-detect |
 | `aiUsageManager.language` | `auto` | Display language: `auto`, `en`, `ja`, `ko`, `zh-cn` |
+| `aiUsageManager.openLocation` | `beside` | Where a new usage tab opens: `beside` (a group next to the active editor) or `active` (the same group) |
+| `aiUsageManager.zoomLevel` | `100` | Zoom level of the usage tab, in percent (`50`–`200`). The toolbar buttons, `Ctrl+Mouse wheel` and `Ctrl+ +/-` write here |
+| `aiUsageManager.accountSort` | `manual` | How the account list is ordered: `manual`, `usage`, `name`, `provider`, `added` |
 | `aiUsageManager.autoRefreshMinutes` | `1` | Refresh interval in minutes (`0`, `1`, `5`, `10`, `30`, `60`). `0` disables it |
 | `aiUsageManager.refreshOnOpen` | `true` | Refresh once when the view is opened |
 | `aiUsageManager.showStatusBar` | `true` | Show the account closest to its limit in the status bar |
@@ -218,6 +258,13 @@ buckets and exclude Priority Tier costs, so they read slightly below the invoice
 
 **Codex CLI reads local files only.** It parses the CLI's own session records,
 so numbers appear only after that CLI has actually made model calls.
+
+**An older desktop build can drop the order you arranged by hand.** That order
+is stored as `settings.account_order` in the `config.json` this extension
+shares with `AI-UsageManager.exe`, and a desktop build older than this release
+does not know the key, so it writes the file back without it. Only the order is
+lost — accounts, credentials and every other setting are untouched, and
+rearranging the list restores it.
 
 ## License
 
@@ -318,6 +365,11 @@ pip install requests urllib3
 広い表なので、細いサイドバーに押し込むと枠の名前とバーが潰れて読めなくなるため
 です。ステータスバーの表示をクリックしても同じ画面が開きます。
 
+開く場所は**アクティブなエディタの隣のグループ**です。見るために開いたファイルを
+覆わないようにするためで、1.8.0 より前と同じく同じグループに開きたいときは
+`aiUsageManager.openLocation` を `active` にしてください。どちらの設定でも、
+**自分で動かしたタブはそのまま**です — 決まるのは新しく開くときの場所だけです。
+
 ### コマンド
 
 コマンドパレットでは、すべて `AI-UsageManager` のカテゴリに入っています。
@@ -335,11 +387,40 @@ pip install requests urllib3
 | `Show Log` | バックエンドのログを出力チャンネルに表示します |
 | `Restart Backend` | Python プロセスを作り直します |
 | `Language` | 表示言語を選びます |
+| `Sort Accounts` | アカウント一覧の並び順を選びます |
+| `Zoom In` | 使用状況の画面を1段だけ拡大します |
+| `Zoom Out` | 使用状況の画面を1段だけ縮小します |
 | `Set Proxy Password` | プロキシのパスワードを設定・消去します (暗号化して保存され、settings.json には書かれません) |
 | `Test Proxy Connection` | いまのプロキシ設定で通信できるか試します |
 | `Import Proxy From Environment Variables` | `HTTP_PROXY` / `HTTPS_PROXY` からホストとポートの設定を埋めます |
 
 追加・編集・削除・再ログインは、画面のボタンからも実行できます。
+
+### 大きさと並び順
+
+この表は、作業中のタブの隣に開いて読むものなので、**大きさも並び順も
+変えられます。** どちらも保存され、次に開いたときもそのままです。
+
+| やりたいこと | 操作 |
+| --- | --- |
+| 拡大 / 縮小 | ツールバーの `−` / `＋`、表の上での `Ctrl+ホイール`、タブが前面のときの `Ctrl+ +` / `Ctrl+ -` |
+| 等倍に戻す | 2つのボタンのあいだの `100%` を押します |
+| 行を1つ動かす | 行の右端の `≡` をドラッグします。マウスを使わないなら、行に焦点を当てて `Alt+↑` / `Alt+↓` |
+| 基準で並べる | ツールバーの `⇅`: 使用率が高い順 / 名前順 / 取得先順 / 追加した順 / 手で並べた順のまま |
+
+**文字だけでなく、バーも余白も固定幅の列も一緒に拡大縮小します。** この表は
+行をまたいでバーの長さを見比べて読むものなので、文字だけが大きくなって列が
+付いてこないと、そもそも読み方が成り立たなくなります。
+
+**基準を選んでも、手で並べた順は捨てられません。** `config.json` に残っている
+ので、いつでも戻せます。基準で並べている最中にドラッグすると「手で並べた順の
+まま」へ切り替わり、**そのとき画面に出ていた並びに、動かした1件を落とした位置
+のまま**残します。
+
+`Ctrl+ +` / `Ctrl+ -` は、使用状況のタブが前面のあいだだけ VS Code 本体の
+ウィンドウ拡大縮小から借りています (他のタブへ移れば元どおりです)。拡大縮小と
+並べ替えの動作確認は VS Code 1.135 で行いました。導入できるのは 1.85 以降です
+が、大きく古い版では見た目が想定と違うことがあります。
 
 ### 設定
 
@@ -347,6 +428,9 @@ pip install requests urllib3
 | --- | --- | --- |
 | `aiUsageManager.pythonPath` | `""` | バックエンドを動かす Python。空欄で自動検出 |
 | `aiUsageManager.language` | `auto` | 表示言語 (`auto` / `en` / `ja` / `ko` / `zh-cn`) |
+| `aiUsageManager.openLocation` | `beside` | 使用状況のタブを新しく開く場所。`beside` (アクティブなエディタの隣のグループ) / `active` (同じグループ) |
+| `aiUsageManager.zoomLevel` | `100` | 使用状況の画面の拡大率 (%)。`50`〜`200`。ツールバーのボタン・`Ctrl+ホイール`・`Ctrl+ +/-` がここへ書きます |
+| `aiUsageManager.accountSort` | `manual` | アカウント一覧の並び順 (`manual` / `usage` / `name` / `provider` / `added`) |
 | `aiUsageManager.autoRefreshMinutes` | `1` | 自動更新の間隔 (分)。`0` / `1` / `5` / `10` / `30` / `60`。`0` で無効 |
 | `aiUsageManager.refreshOnOpen` | `true` | 画面を開いたときに1回更新する |
 | `aiUsageManager.showStatusBar` | `true` | ステータスバーに最逼迫アカウントを出す |
@@ -426,6 +510,12 @@ Webview は DevTools で中身を覗ける実行環境なので、そこへ Cook
 
 **Codex CLI はローカルのファイルを読むだけです。** CLI 自身のセッション記録を
 解析するので、その CLI がモデルを呼んだ後でないと数字は出ません。
+
+**手で並べた順は、古いデスクトップ版に消されることがあります。** 並び順は
+`config.json` の `settings.account_order` に入りますが、このファイルは
+`AI-UsageManager.exe` と共有しています。このキーを知らない古いデスクトップ版が
+設定を保存すると、そのキーごと落ちます。**失われるのは並び順だけで**、
+アカウントも資格情報も他の設定も無事です。並べ直せば元に戻ります。
 
 ### ライセンス
 

@@ -2,7 +2,7 @@
   "name": "ai-usage-manager",
   "displayName": "AI-UsageManager",
   "description": "%extension.description%",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "publisher": "YutaHassy",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -124,6 +124,21 @@
         "category": "AI-UsageManager"
       },
       {
+        "command": "aiUsageManager.selectSort",
+        "title": "%command.selectSort.title%",
+        "category": "AI-UsageManager"
+      },
+      {
+        "command": "aiUsageManager.zoomIn",
+        "title": "%command.zoomIn.title%",
+        "category": "AI-UsageManager"
+      },
+      {
+        "command": "aiUsageManager.zoomOut",
+        "title": "%command.zoomOut.title%",
+        "category": "AI-UsageManager"
+      },
+      {
         "command": "aiUsageManager.setProxyPassword",
         "title": "%command.setProxyPassword.title%",
         "category": "AI-UsageManager"
@@ -137,6 +152,44 @@
         "command": "aiUsageManager.importProxyFromEnvironment",
         "title": "%command.importProxyFromEnvironment.title%",
         "category": "AI-UsageManager"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "aiUsageManager.zoomIn",
+        "key": "ctrl+=",
+        "mac": "cmd+=",
+        "when": "activeWebviewPanelId == 'aiUsageManager.usage'"
+      },
+      {
+        "command": "aiUsageManager.zoomIn",
+        "key": "ctrl+shift+=",
+        "mac": "cmd+shift+=",
+        "when": "activeWebviewPanelId == 'aiUsageManager.usage'"
+      },
+      {
+        "command": "aiUsageManager.zoomIn",
+        "key": "ctrl+numpad_add",
+        "mac": "cmd+numpad_add",
+        "when": "activeWebviewPanelId == 'aiUsageManager.usage'"
+      },
+      {
+        "command": "aiUsageManager.zoomOut",
+        "key": "ctrl+-",
+        "mac": "cmd+-",
+        "when": "activeWebviewPanelId == 'aiUsageManager.usage'"
+      },
+      {
+        "command": "aiUsageManager.zoomOut",
+        "key": "ctrl+shift+-",
+        "mac": "cmd+shift+-",
+        "when": "activeWebviewPanelId == 'aiUsageManager.usage'"
+      },
+      {
+        "command": "aiUsageManager.zoomOut",
+        "key": "ctrl+numpad_subtract",
+        "mac": "cmd+numpad_subtract",
+        "when": "activeWebviewPanelId == 'aiUsageManager.usage'"
       }
     ],
     "configuration": {
@@ -159,6 +212,36 @@
             "%configuration.language.enum.zh-cn%"
           ],
           "description": "%configuration.language.description%"
+        },
+        "aiUsageManager.openLocation": {
+          "type": "string",
+          "default": "beside",
+          "enum": ["beside", "active"],
+          "enumDescriptions": [
+            "%configuration.openLocation.enum.beside%",
+            "%configuration.openLocation.enum.active%"
+          ],
+          "description": "%configuration.openLocation.description%"
+        },
+        "aiUsageManager.zoomLevel": {
+          "type": "number",
+          "default": 100,
+          "minimum": 50,
+          "maximum": 200,
+          "description": "%configuration.zoomLevel.description%"
+        },
+        "aiUsageManager.accountSort": {
+          "type": "string",
+          "default": "manual",
+          "enum": ["manual", "usage", "name", "provider", "added"],
+          "enumDescriptions": [
+            "%configuration.accountSort.enum.manual%",
+            "%configuration.accountSort.enum.usage%",
+            "%configuration.accountSort.enum.name%",
+            "%configuration.accountSort.enum.provider%",
+            "%configuration.accountSort.enum.added%"
+          ],
+          "description": "%configuration.accountSort.description%"
         },
         "aiUsageManager.autoRefreshMinutes": {
           "type": "number",

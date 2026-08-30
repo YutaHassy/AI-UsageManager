@@ -5,6 +5,140 @@ All notable changes to the AI-UsageManager extension are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-08-30
+
+The usage table decided two things on your behalf that it had no business
+deciding: how big it was, and what order the accounts came in. Neither mattered
+much with three accounts on a full-width tab. With a dozen accounts in a split,
+both do — the bars are too small to read at a glance, and the account you
+actually watch sits wherever you happened to register it.
+
+**This release hands both back.** The tab zooms between 50% and 200%, and the
+list can be dragged into whatever order you want, or sorted by one of four
+criteria. Both choices are remembered and are there again the next time you
+open it.
+
+**The tab also opens beside your work now, rather than on top of it.** That is
+a change to existing behaviour and the one thing here you will see without
+having asked for it; `aiUsageManager.openLocation` puts the old placement back.
+
+### Added
+
+- **Zoom, from 50% to 200%.** `−`, `100%` and `＋` are in the toolbar,
+  `Ctrl+Mouse wheel` works anywhere over the table, and `Ctrl+ +` / `Ctrl+ -`
+  work while the tab is focused. Clicking the `100%` label returns to actual
+  size.
+
+  **The whole view scales, not only the text** — gauges, padding, the
+  fixed-width metric columns and the rounded corners move together. This table
+  is read by comparing bar lengths from row to row and from account to
+  account, and a font that grows while its column does not is a table that no
+  longer lines up. Scaling the layout itself is also all-or-nothing, which
+  rules out the other failure available here: one hard-coded size missed among
+  dozens, visible only once someone goes to 200%.
+
+  The level is saved in `aiUsageManager.zoomLevel`, so a tab you shrank to fit
+  a narrow split opens at that size next time. The row you were reading stays
+  on screen while the level changes, for the same reason the view already
+  refuses to jump back to the top when it refreshes.
+
+- **Manual ordering, by dragging or from the keyboard.** Every row in the
+  summary has a handle (`≡`) at its right end; drag it and the row lands where
+  you dropped it. The list scrolls by itself when you reach its top or bottom
+  edge, because a tab in a split at 200% shows fewer rows than there are
+  accounts, and a handle you can pick up but cannot carry anywhere is worse
+  than no handle. Without a mouse: focus a row and press `Alt+Up` or
+  `Alt+Down`. The row keeps focus, so it can be pressed again immediately.
+  Plain `Enter`, `Space` and the arrow keys behave exactly as before — only
+  `Alt` is new.
+
+  **The order lives with the accounts, not with the window.** It is written to
+  `settings.account_order` in the same `config.json` the accounts are in, as a
+  list of account ids. **The `accounts` array itself is never reordered:** its
+  order *is* the record of what was registered when, and overwriting it would
+  leave "in the order they were added" with nothing to sort by.
+
+  While you are holding a row, the automatic refresh stops redrawing the list —
+  it would otherwise reorder rows and change their heights under your pointer,
+  and the drop would land somewhere you did not aim at. The results themselves
+  are not discarded, only the redraw, and the view catches up the moment you
+  let go.
+
+- **Five ways to order the list.** `⇅` in the toolbar — or the
+  `Sort Accounts` command — offers highest usage first, by name, by provider,
+  in the order they were added, and "keep the order you arranged by hand". The
+  choice is saved in `aiUsageManager.accountSort`, and `⇅` is highlighted
+  whenever it is anything other than the manual order, so "why is this account
+  not where I put it" is answerable without hovering over anything.
+
+  **Choosing a criterion does not discard your manual order.** It stays in
+  `config.json` and comes back intact when you switch back to it. Dragging a
+  row while a criterion is active switches to the manual order and keeps the
+  arrangement you were looking at, with the moved row in its new place — the
+  alternatives are a handle that visibly does nothing, or a move that the next
+  automatic refresh silently undoes.
+
+  "Highest usage first" sorts on the number the row is showing, which includes
+  the previous value while a refresh is in flight. Sorting on the live value
+  would drop every account to "no number yet" the instant a refresh starts and
+  reshuffle the entire list once a minute, which is the default refresh
+  interval.
+
+### Changed
+
+- **The usage tab opens in a group beside the active editor, instead of in the
+  same group.** It is a wide table, and opening it in the same group meant it
+  covered the file you opened it to look at — after which the way to see both
+  was to drag it into a split by hand, every time.
+
+  **Set `aiUsageManager.openLocation` to `active` to get the previous
+  behaviour back.** This decides where a *new* tab appears and nothing else: a
+  tab you have already moved somewhere stays where you put it, and reopening
+  an existing tab still never moves it. The direction of "beside" is VS Code's
+  own `workbench.editor.openSideBySideDirection`, so it lands below rather
+  than to the right for anyone who has set that to `down`.
+
+- **`config.json` gains one key: `settings.account_order`.** It holds the
+  account ids in the order you arranged them. It is matched against the
+  accounts that actually exist every time the list is drawn, so it does not
+  have to be complete or current — an id left behind by a deleted account is
+  ignored, and a newly added account goes to the end. Nothing rewrites the key
+  to tidy it up, which does mean that ids of deleted accounts stay visible if
+  you open the file with `Open Settings File (config.json)`. Rewriting the
+  settings file on every redraw would be the worse trade.
+
+### Known limitations
+
+- **An older desktop build can silently drop the order you arranged.**
+  `config.json` is shared with `AI-UsageManager.exe`, and that app saves the
+  settings it knows about; one built before this release does not know
+  `settings.account_order` and writes the file back without it. **Only the
+  order is lost** — the accounts, their credentials and every other setting
+  are untouched, and rearranging the list restores it.
+
+- **Zoom and drag-to-reorder were verified on VS Code 1.135.** The extension
+  still declares `^1.85.0` and installs on anything from that version up,
+  because raising the floor would lock people out of an extension that works
+  for them otherwise. On a much older VS Code the scaled layout and the drop
+  targets may not behave the way they do here; the numbers stay correct
+  either way.
+
+- **`Ctrl+ +` and `Ctrl+ -` are taken over from VS Code's own window zoom**
+  while the usage tab is focused, by a keybinding this extension contributes.
+  Move to another tab and they zoom the window again, as before. Keys are
+  resolved by VS Code and the last rule wins, so a personal keybinding or
+  another extension claiming the same combination can leave them zooming the
+  window instead. The toolbar buttons and `Ctrl+Mouse wheel` are unaffected
+  and always work.
+
+- **Editing `aiUsageManager.zoomLevel` in the Settings UI takes effect the
+  next time the tab is opened**, not immediately. The zoom level is owned by
+  the view while the view is open — pushing the setting in would fight the
+  wheel, which writes the setting a moment after you stop turning it.
+  `zoomLevel` is also written globally, so a workspace-level value of it wins
+  and the level will not appear to stick; this is the same behaviour
+  `aiUsageManager.language` has always had.
+
 ## [1.7.0] - 2026-08-21
 
 The last three releases each removed one more reason to install PySide6. This

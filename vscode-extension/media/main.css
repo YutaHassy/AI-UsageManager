@@ -27,6 +27,12 @@ body {
     display: flex;
     align-items: center;
     gap: 8px;
+    /* **狭くなったら折り返します。** この画面は既定でエディタの隣に開き
+       (aiUsageManager.openLocation)、そのうえ 200% まで拡大できるので、
+       ボタンが1行に収まらないことが実際に起きます (幅 480px の半分幅 x 200%
+       で「更新」が画面の外へ出ました)。2行になるほうが、押せなくなるより
+       ましです。下の .actions に同じ判断の前例があります。 */
+    flex-wrap: wrap;
     flex: 0 0 auto;
     padding: 8px 12px;
     border-bottom: 1px solid var(--vscode-panel-border);
@@ -73,7 +79,18 @@ body {
     white-space: nowrap;
 }
 
+/* 拡大縮小の − / 100% / ＋。**縮めても潰しません。** この画面は既定で
+   エディタの隣に開くので (aiUsageManager.openLocation)、半分の幅で使われる
+   のが普通です。押せなくなるくらいなら、先に縮むのはタブ名のほうです。 */
+.zoom {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex: 0 0 auto;
+}
+
 button.primary {
+    flex: 0 0 auto;
     padding: 4px 14px;
     border: none;
     border-radius: 4px;
@@ -101,6 +118,11 @@ button.icon-button {
     display: flex;
     align-items: center;
     justify-content: center;
+    /* **潰れないようにします。** 既定の flex: 0 1 auto のままだと、幅の狭い
+       エディタグループでは記号ボタンから縮み、中の文字が読めなくなります。
+       縮んでよいのはタブ名 (.tab は overflow: hidden を持っています) だけで、
+       それでも収まらないぶんは .toolbar の flex-wrap で2行目へ回ります。 */
+    flex: 0 0 auto;
     width: 26px;
     height: 26px;
     padding: 0;
@@ -114,8 +136,33 @@ button.icon-button {
     line-height: 1;
 }
 
-button.icon-button:hover {
+button.icon-button:hover:not(:disabled) {
     background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+/* 上限・下限に届いた − / ＋。押せないことを、押す前に見せます。 */
+button.icon-button:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* 何かの基準で並べているあいだの ⇅。**押した結果がひと目で分かるように
+   します。** 基準名は title に入れてありますが、ホバーしなければ読めません。
+   手で並べた順のままなのか、基準で並んでいるのかは、見ただけで分かるべきです。
+   選ばれているタブ (.tab.active) と同じ色を使うのは、この画面で「いまこれ」を
+   表す色を1つにしておくためです。 */
+button.icon-button.active {
+    background-color: var(--vscode-list-activeSelectionBackground);
+    color: var(--vscode-list-activeSelectionForeground);
+}
+
+/* 「100%」は数字が入るので、正方形の記号ボタンより横に広げます。
+   3桁 (200%) でも折り返さない幅にしてあります。 */
+button.zoom-level {
+    width: auto;
+    min-width: 44px;
+    padding: 0 4px;
+    font-size: inherit;
 }
 
 button.ghost {
@@ -213,6 +260,45 @@ button.ghost:hover {
 
 .summary-lines {
     padding-left: 22px;
+}
+
+/* 並べ替えのつまみ。**行の右端に置きます。** 丸印の側 (左) に足すと、
+   丸印と .summary-lines の字下げ (padding-left: 22px) の揃いが崩れ、
+   枠の行が名前より右へずれます。.summary-name は overflow: hidden を
+   持つので、margin-left: auto で押しても名前のほうが縮んで収まります。 */
+.drag-handle {
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 0 4px;
+    color: var(--vscode-descriptionForeground);
+    cursor: grab;
+    user-select: none;
+    /* **タッチ・ペンではこれが要ります。** 無いとブラウザが縦の動きを
+       スクロールとして取り上げ、pointermove が途中で来なくなります。 */
+    touch-action: none;
+}
+
+/* **掴んでいるあいだは一覧全体の選択を止めます。** setPointerCapture では
+   テキスト選択の開始は止まらないので、これが無いと行の文字が青く塗られた
+   まま並べ替えることになります。 */
+.summary-list.is-dragging {
+    user-select: none;
+}
+
+.summary-row.is-dragging {
+    opacity: 0.5;
+    cursor: grabbing;
+}
+
+/* 落とす先の印。**枠線ではなく片側の線だけ**にします。border にすると
+   行の高さが変わり、掴んでいるあいだ下の行がずれ続けます。box-shadow は
+   場所を取らないので、印が付いても表は動きません。 */
+.summary-row.drop-before {
+    box-shadow: 0 -2px 0 0 var(--vscode-focusBorder);
+}
+
+.summary-row.drop-after {
+    box-shadow: 0 2px 0 0 var(--vscode-focusBorder);
 }
 
 /* ---------------- 枠 (メトリクス) の1行 ----------------

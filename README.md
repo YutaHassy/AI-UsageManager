@@ -22,6 +22,12 @@ tracked — the originals at the repo root are the only ones to edit.
 > backend they share lives here. This is why `services/resources.py` knows how
 > to find files inside a PyInstaller bundle, and why `ui/` contains just the
 > account dialog rather than a full desktop UI.
+>
+> **Sharing the file has a cost worth knowing.** `ConfigManager` writes back
+> only the keys in its own `DEFAULT_SETTINGS`, so a setting added on one side
+> is dropped the first time the other side saves — the extension's manual
+> account order (`settings.account_order`, added in 1.8.0) disappears if a
+> desktop build predating it writes the file.
 
 ## Supported services
 
@@ -196,6 +202,11 @@ vsix は拡張ディレクトリの外を参照できないため、
 > 含まれていません。** ここにあるのは共有しているバックエンドだけです。
 > `services/resources.py` が PyInstaller のバンドルを扱えるのも、`ui/` に
 > アカウント編集画面しか無いのも、この事情によります。
+>
+> **共有には代償があります。** `ConfigManager` は自分の `DEFAULT_SETTINGS` に
+> あるキーしか書き戻さないので、片方だけに足した設定は、もう片方が保存した
+> 時点で落ちます (1.8.0 で足した手動の並び順 `settings.account_order` は、
+> それを知らないデスクトップ版が保存すると消えます)。
 
 **対応サービス** (`services/providers/__init__.py` の一覧に基づく): Claude.ai・
 ChatGPT・Gemini (いずれも Cookie 認証の利用枠)、Azure OpenAI・Anthropic API

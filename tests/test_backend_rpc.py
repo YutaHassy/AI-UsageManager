@@ -429,5 +429,100 @@ class TestCreateAccount(BackendRpcTestCase):
         self.assertEqual(self.account(snapshot, created)["name"], "保存されたか")
 
 
+class TestReorderAccounts(BackendRpcTestCase):
+    """画面に出す並び順。**accounts 配列そのものは動かしません。**
+
+    あちらの格納順は「追加した順」そのもので、並べ替えの基準の1つが
+    それです。上書きしてしまうと二度と復元できないので、並び順は
+    settings.account_order という別のキーに持ちます。
+    """
+
+    def reorder(self, order):
+        return self.backend.call("reorder_accounts", {"order": order})
+
+    @staticmethod
+    def ids(snapshot):
+        return [a["id"] for a in snapshot["accounts"]]
+
+    def test_the_order_is_returned_in_the_snapshot(self):
+        response = self.reorder(["acc-3", "acc-1", "acc-2"])
+        self.assertTrue(response["ok"], response.get("error"))
+        self.assertEqual(response["result"]["accountOrder"],
+                         ["acc-3", "acc-1", "acc-2"])
+
+    def test_the_accounts_array_keeps_the_order_it_was_added_in(self):
+        """**ここが本題です。** 並べ替えても accounts の順は変わらないこと。
+
+        変わってしまうと「追加した順」に並べ直す手立てが無くなります。
+        """
+        response = self.reorder(["acc-3", "acc-2", "acc-1"])
+        self.assertEqual(self.ids(response["result"]), ["acc-1", "acc-2", "acc-3"])
+
+    def test_the_order_survives_a_reload(self):
+        """保存されていること (画面を開き直しても並びが戻らない)。"""
+        self.reorder(["acc-2", "acc-3", "acc-1"])
+        snapshot = self.backend.call("list_accounts", {"reload": True})["result"]
+        self.assertEqual(snapshot["accountOrder"], ["acc-2", "acc-3", "acc-1"])
+        self.assertEqual(self.ids(snapshot), ["acc-1", "acc-2", "acc-3"])
+
+    def test_the_order_is_kept_without_a_reload(self):
+        """読み直さずに引き直しても残っていること (手元の設定も更新されている)。"""
+        self.reorder(["acc-3", "acc-1"])
+        snapshot = self.backend.call("list_accounts")["result"]
+        self.assertEqual(snapshot["accountOrder"], ["acc-3", "acc-1"])
+
+    def test_a_partial_order_is_accepted(self):
+        """**全件そろっている必要はありません。**
+
+        突き合わせは画面側が毎回行うので、載っていない id は末尾へ回ります。
+        ここで弾くと、取得の途中で1件増えただけで保存が通らなくなります。
+        """
+        response = self.reorder(["acc-2"])
+        self.assertTrue(response["ok"], response.get("error"))
+        self.assertEqual(response["result"]["accountOrder"], ["acc-2"])
+
+    def test_an_empty_order_is_accepted(self):
+        response = self.reorder([])
+        self.assertTrue(response["ok"], response.get("error"))
+        self.assertEqual(response["result"]["accountOrder"], [])
+
+    def test_unknown_account_is_refused(self):
+        """知らない id が混ざるのは、画面と手元の一覧がずれている印です。"""
+        response = self.reorder(["acc-1", "居ないアカウント"])
+        self.assertFalse(response["ok"])
+
+    def test_a_duplicated_account_is_refused(self):
+        response = self.reorder(["acc-1", "acc-1", "acc-2"])
+        self.assertFalse(response["ok"])
+
+    def test_a_refused_order_does_not_overwrite_the_saved_one(self):
+        """弾いたときに、保存済みの並びを壊さないこと。"""
+        self.reorder(["acc-3", "acc-2", "acc-1"])
+        self.assertFalse(self.reorder(["acc-1", "acc-1"])["ok"])
+        snapshot = self.backend.call("list_accounts", {"reload": True})["result"]
+        self.assertEqual(snapshot["accountOrder"], ["acc-3", "acc-2", "acc-1"])
+
+    def test_an_old_config_without_the_key_still_works(self):
+        """**後方互換。** account_order を知らない設定ファイルでも動くこと。
+
+        v1.7.0 やデスクトップ版が書いた config.json には、このキーが
+        ありません。**そこから読んで、そのまま並べ替えられる**必要が
+        あります。無い状態を作るためにファイルから消してから読み直します。
+        """
+        path = ConfigManager().config_path
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        data["settings"].pop("account_order", None)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+
+        snapshot = self.backend.call("list_accounts", {"reload": True})["result"]
+        self.assertEqual(snapshot["accountOrder"], [],
+                         "キーが無ければ空の並びとして扱うこと")
+        self.assertEqual(self.ids(snapshot), ["acc-1", "acc-2", "acc-3"])
+        self.assertTrue(self.reorder(["acc-2", "acc-1"])["ok"],
+                        "古い設定ファイルからでも並べ替えられること")
+
+
 if __name__ == "__main__":
     unittest.main()

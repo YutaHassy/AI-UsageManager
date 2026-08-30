@@ -59,6 +59,9 @@
     let state = {
         accounts: [], entries: {}, fetchable: [], refreshing: false,
         configPath: '', loadError: null, encryptionAvailable: true,
+        // 手で決めた並び (accountId) と、いま選ばれている並べ方。**届く前に
+        // undefined を触らないよう、ここで形を決めておきます。**
+        accountOrder: [], sort: 'manual',
         // 一覧が1度でも届いたか。**「アカウントが0件」と「まだ届いていない」を
         // 区別するために要ります。** 混同すると、開いた直後の一瞬だけ
         // 「アカウントがありません」と出て、登録済みの利用者を驚かせます。
@@ -81,7 +84,11 @@
         tabDetail: /** @type {HTMLButtonElement} */ (document.getElementById('tab-detail')),
         tabDetailWrap: /** @type {HTMLElement} */ (document.getElementById('tab-detail-wrap')),
         settings: /** @type {HTMLButtonElement} */ (document.getElementById('settings')),
+        sort: /** @type {HTMLButtonElement} */ (document.getElementById('sort')),
         language: /** @type {HTMLButtonElement} */ (document.getElementById('language')),
+        zoomOut: /** @type {HTMLButtonElement} */ (document.getElementById('zoom-out')),
+        zoomLevel: /** @type {HTMLButtonElement} */ (document.getElementById('zoom-level')),
+        zoomIn: /** @type {HTMLButtonElement} */ (document.getElementById('zoom-in')),
     };
 
     // ---------------- 小道具 ----------------
@@ -244,6 +251,181 @@
         };
     }
 
+    // ---------------- 並び順 ----------------
+    //
+    // **state.accounts の並びは「追加した順」です。** バックエンドは並べ替え
+    // ません (backend/cli.py の snapshot)。あちらの格納順そのものが「追加した
+    // 順」の唯一の記録なので、書き換えるとその基準に戻せなくなります。手で
+    // 決めた並びは accountOrder として別に届くので、ここで突き合わせます。
+
+    /**
+     * 保存の応答を待つあいだ、先に描いておく並び。**待たないのは、応答まで
+     * 行が動かないと「掴んで落としたのに戻った」ように見えるため**です。
+     * 保存を頼んでいないあいだは null で、そのときは届いた並びをそのまま使います。
+     *
+     * @type {string[]|null}
+     */
+    let localOrder = null;
+
+    /** localOrder を描いているあいだの並べ方 (手で動かした時点で 'manual')。 @type {string|null} */
+    let localSort = null;
+
+    /** 保存が失敗したと確定したか。**推測では立てません** (拡張ホストが伝えてきます)。 */
+    let orderSaveFailed = false;
+
+    /** 同じ id が同じ順で並んでいるか。 */
+    function sameIds(a, b) {
+        const left = a || [];
+        const right = b || [];
+        if (left.length !== right.length) { return false; }
+        for (let i = 0; i < left.length; i++) {
+            if (left[i] !== right[i]) { return false; }
+        }
+        return true;
+    }
+
+    /**
+     * 楽観的な上書きを、**もう要らなくなったときだけ**捨てます。
+     *
+     * 捨ててよいのは「送った並びがそのまま返ってきた」ときと「保存できな
+     * かったと確定した」ときの2つだけです。**「新しい状態が届いたら捨てる」
+     * にしてはいけません** — 状態は1回の更新で十数回飛ぶので (panel.js の
+     * post)、保存の応答より先に届いたぶんで捨てると、古い並びで描き直して
+     * から新しい並びへ戻る、という一往復の点滅になります。
+     */
+    function releaseLocalOrder(message) {
+        if (localOrder === null) { return; }
+        if (sameIds(message.accountOrder, localOrder) || orderSaveFailed) {
+            localOrder = null;
+            localSort = null;
+            orderSaveFailed = false;
+            clearOrderTimeout();
+        }
+    }
+
+    /**
+     * 使用率順に並べるときの率。**行に出ている数字と同じものを使います。**
+     *
+     * accountState の utilization ではありません。あちらは取得中・待機中に
+     * 無条件で null を返します (「取得中...」と出すために必要な null です)。
+     * それで並べると、全件更新が走った瞬間に全員が null へ落ちて一覧が丸ごと
+     * 名前順に崩れ、結果が1件届くたびに行が飛びます。既定の更新間隔は1分な
+     * ので (package.json の autoRefreshMinutes)、これは例外ではなく毎分起きる
+     * 普通の動作です。
+     *
+     * 行のほうは同じ理由で前回の値を出し続けています (updateSummaryRow の
+     * 「取得中も前回の値を出し続けます」)。順序もそちらへ合わせます — 見えて
+     * いる数字と並びが食い違うほうが分かりません。取得できていないものは
+     * store が usage を持たないので (store.js の setEntry。エラーのときは
+     * 前回の値ごと捨てます) null になり、末尾へ回ります。
+     */
+    function sortUtilization(account) {
+        const usage = entryOf(account).usage;
+        const value = usage ? usage.max_utilization : null;
+        return typeof value === 'number' && isFinite(value) ? value : null;
+    }
+
+    /** いま効いている並べ方。 */
+    function currentSort() {
+        return localSort || state.sort || 'manual';
+    }
+
+    /** 名前で並べる。同順位の落ち着き先としても使います。 */
+    function compareByName(a, b) {
+        return String(a.name || '').localeCompare(String(b.name || ''), LANG);
+    }
+
+    /**
+     * 画面に出す順に並べたアカウントを返します。
+     *
+     * **state.accounts は並べ替えません。** 破壊的に並べ替えると「追加した順」
+     * が失われるので、いつも新しい配列を作って返します。
+     *
+     * **しきい値は作りません。** 使用率順に使うのはバックエンドが入れた
+     * max_utilization だけです (sortUtilization 参照)。数値が無いもの
+     * (取得前・エラー) は末尾へ回します。0% と「取れていない」を同じ場所に
+     * 置くと、区別が付かなくなります。
+     */
+    function orderedAccounts() {
+        const accounts = state.accounts || [];
+        const sort = currentSort();
+
+        if (sort === 'manual') {
+            return manualOrder(accounts, localOrder || state.accountOrder || []);
+        }
+        if (sort === 'added') {
+            return accounts.slice();
+        }
+        if (sort === 'name') {
+            return accounts.slice().sort(compareByName);
+        }
+        if (sort === 'provider') {
+            return accounts.slice().sort((a, b) => {
+                const byProvider = String(a.providerLabel || '')
+                    .localeCompare(String(b.providerLabel || ''), LANG);
+                return byProvider !== 0 ? byProvider : compareByName(a, b);
+            });
+        }
+        if (sort === 'usage') {
+            // 並べ替えの比較は何度も呼ばれるので、率は先に1回だけ引きます。
+            const rates = new Map();
+            for (const account of accounts) {
+                rates.set(account.id, sortUtilization(account));
+            }
+            return accounts.slice().sort((a, b) => {
+                const left = rates.get(a.id);
+                const right = rates.get(b.id);
+                if (left === null && right === null) { return compareByName(a, b); }
+                if (left === null) { return 1; }
+                if (right === null) { return -1; }
+                if (left !== right) { return right - left; }
+                return compareByName(a, b);
+            });
+        }
+        // 知らない基準 (設定ファイルを手で書き換えた等) は、並べないでおきます。
+        return accounts.slice();
+    }
+
+    /**
+     * 手で決めた並びと、いま居るアカウントを突き合わせます。
+     *
+     * **並びのほうが古くても構いません。** 消えたアカウントの id は無視し、
+     * 並びに無いアカウント (新しく足したもの) は末尾へ付けます。末尾なのは、
+     * 追加が末尾に積まれる (cli.py の create_account) のと揃えるためです。
+     * **ここで保存し直しはしません** — 毎回突き合わせるので実害がなく、
+     * 表示のたびに設定ファイルを書き換えるほうがよほど乱暴です。
+     */
+    function manualOrder(accounts, order) {
+        const byId = new Map();
+        for (const account of accounts) { byId.set(account.id, account); }
+
+        const result = [];
+        const placed = new Set();
+        for (const id of order) {
+            const account = byId.get(id);
+            if (account && !placed.has(id)) {
+                result.push(account);
+                placed.add(id);
+            }
+        }
+        for (const account of accounts) {
+            if (!placed.has(account.id)) { result.push(account); }
+        }
+        return result;
+    }
+
+    /**
+     * 並べ方のラベル。**extension.js の選択肢と同じ原文を使います** —
+     * 選んだものと出ているものが違う言い回しだと、選んだ結果が確かめられません。
+     */
+    function sortLabel(sort) {
+        if (sort === 'usage') { return t('Highest usage first'); }
+        if (sort === 'name') { return t('By name'); }
+        if (sort === 'provider') { return t('By provider'); }
+        if (sort === 'added') { return t('In the order they were added'); }
+        return t('Keep the order you arranged by hand');
+    }
+
     // ---------------- 部品 ----------------
 
     /**
@@ -351,12 +533,43 @@
         const root = make('div', 'summary-row');
         root.tabIndex = 0;
         root.setAttribute('role', 'button');
+        // **落とす先を決めるとき、DOM の並びから id を読みます。** 掴んで
+        // いるあいだは描き直しを止めるので (dragging)、そのとき正しいのは
+        // 計算し直した並びではなく、いま画面に出ている並びのほうです。
+        root.dataset.accountId = accountId;
 
         const header = make('div', 'summary-header');
         const dot = make('span', 'dot', '');
         const name = make('span', 'summary-name', '');
         header.appendChild(dot);
         header.appendChild(name);
+        // つまみは .summary-header の末尾に置きます (main.css の .drag-handle)。
+        const handle = make('span', 'drag-handle', '≡');
+        // **role="button" は付けません。** 焦点を当てられないものを「ボタン」
+        // と伝えると、支援技術には起動できるものとして見えるのに、キーボード
+        // からは押せません。名前 (aria-label) は updateSummaryRow が入れます。
+        // 掴まずに動かす手立ては行の Alt+↑↓ で用意してあります。
+
+        // **焦点は行 (root) が持ちます。** つまみにも焦点を持たせると、Tab の
+        // 回数がアカウント数の2倍になり、キーボードだけで一覧を通り抜けるのが
+        // 倍かかります。Alt+↑↓ は行に付けてあるので、これで足ります。
+        handle.tabIndex = -1;
+        // **掴んだだけで詳細が開かないようにします。** click は行にも付いて
+        // いるので、止めないと落とした直後にその行が開きます。
+        handle.addEventListener('click', (e) => e.stopPropagation());
+        handle.addEventListener('pointerdown', (e) => beginDrag(e, accountId, root, handle));
+        handle.addEventListener('pointermove', onDragMove);
+        // **掴んでいるポインタのものだけを見ます** (onDragMove と同じ照合)。
+        // 照合しないと、2本目の指が別の行のつまみに触れて離しただけで、1本目が
+        // まだ触れているのに、その時点の落とし先で確定して保存が飛びます。
+        handle.addEventListener('pointerup', (e) => {
+            if (isDragPointer(e)) { endDrag(true); }
+        });
+        // **取り消しでも必ず後始末します。** 落として終わるとは限りません。
+        handle.addEventListener('pointercancel', (e) => {
+            if (isDragPointer(e)) { endDrag(false); }
+        });
+        header.appendChild(handle);
         root.appendChild(header);
 
         const lines = make('div', 'summary-lines');
@@ -365,10 +578,19 @@
         const open = () => { selectedId = accountId; persist(); render(); };
         root.addEventListener('click', open);
         root.addEventListener('keydown', (e) => {
+            // **Alt で切り分けます。** こうしておけば、素の Enter / Space も、
+            // 素の ↑ / ↓ (焦点の移動はブラウザ任せ) も今までどおりです。
+            // VSCode 本体の Alt+↑↓ (行の移動) は when: editorTextFocus が
+            // 付いているので、webview に焦点があるあいだは発火しません。
+            if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+                e.preventDefault();
+                moveAccount(accountId, e.key === 'ArrowUp' ? -1 : 1);
+                return;
+            }
             if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
         });
 
-        return { root, dot, name, lines, lineNodes: [] };
+        return { root, dot, name, handle, lines, lineNodes: [] };
     }
 
     function updateSummaryRow(row, account) {
@@ -376,6 +598,12 @@
         setText(row.dot, info.dot);
         setText(row.name, t('{name} [{provider}]',
             { name: account.name, provider: account.providerLabel }));
+        // **記号 (≡) だけでは、読み上げても何のつまみか分かりません。**
+        // 名前と結び付けておかないと、一覧の中で同じ読み上げが人数ぶん並びます。
+        const moveLabel = t('Move {name}', { name: account.name });
+        if (row.handle.getAttribute('aria-label') !== moveLabel) {
+            row.handle.setAttribute('aria-label', moveLabel);
+        }
 
         const entry = entryOf(account);
         // **取得中も前回の値を出し続けます。** 「取得中...」の1行に差し替えると
@@ -402,17 +630,25 @@
         root.appendChild(empty);
         const hint = make('p', 'hint', t('Click a row to open that account.'));
         root.appendChild(hint);
+        // **手順を書いておきます。** つまみは見れば掴めそうだと分かりますが、
+        // キーボードでも動かせることは、触っても見ても分かりません。
+        const orderHint = make('p', 'hint',
+            t('Drag to reorder. Alt+Up and Alt+Down move the selected row.'));
+        root.appendChild(orderHint);
 
         const actions = make('div', 'actions');
         const addButton = makeButton('ghost', () => vscode.postMessage({ type: 'addAccount' }));
         actions.appendChild(addButton);
         root.appendChild(actions);
 
-        return { root, list, empty, hint, actions, addButton, rows: new Map() };
+        return { root, list, empty, hint, orderHint, actions, addButton, rows: new Map() };
     }
 
     function updateSummary(view) {
-        const accounts = state.accounts;
+        // **並べるのはここだけです。** 行は accountId で使い回し、位置が
+        // 違うときだけ動かすので (下の insertBefore)、並びが変わっても
+        // 作り直しは起きません。
+        const accounts = orderedAccounts();
 
         // 顔ぶれが変わったときだけ行を作り直す。並びが同じなら触らない。
         const alive = new Set();
@@ -438,6 +674,7 @@
         const hasAccounts = accounts.length > 0;
         setHidden(view.list, !hasAccounts);
         setHidden(view.hint, !hasAccounts);
+        setHidden(view.orderHint, !hasAccounts);
         setHidden(view.empty, hasAccounts);
         setText(view.empty, state.loaded
             ? t('No accounts yet. Use "＋ Add" to register one.')
@@ -447,6 +684,399 @@
             t('Opens the form for registering an account'));
     }
 
+    // ---------------- 並べ替えの操作 ----------------
+    //
+    // **落とす位置は、矩形とポインタの相対比較だけで決めます。** 倍率 (zoom)
+    // を計算に持ち込みません。getBoundingClientRect() の返り値と
+    // PointerEvent.clientY は同じ座標空間にいるので、「ポインタが行の上半分に
+    // いるか下半分にいるか」を見るだけなら、倍率がいくつであるかを知る必要が
+    // ありません。倍率を掛ける式を1つでも書くと、その式は倍率の当て方
+    // (body の zoom) に縛られ、当て方を替えた日に静かにずれ始めます。
+
+    /**
+     * 掴んでいるあいだの状態。**null でないあいだは描き直しを止めます**
+     * (下の renderPending)。
+     *
+     * @type {{pointerId: number, accountId: string, root: HTMLElement,
+     *         handle: HTMLElement, targetId: string|null, before: boolean}|null}
+     */
+    let dragging = null;
+
+    /**
+     * 次に来る click を1つだけ捨てるか。
+     *
+     * **掴みを取り消したあとにマウスを離すと、そのままでは行が開きます。**
+     * 捕まえ (setPointerCapture) を外した時点から、pointerup の届き先は
+     * つまみではなく行の本体に変わります。click が起きる場所は pointerdown と
+     * pointerup の共通の親なので、両方が同じ行の中にあると**行そのもの**に
+     * なり、つまみに付けた stopPropagation はもう通り道にいません。Esc でも、
+     * ウィンドウの非アクティブ化でも、タブを隠したときでも同じです。
+     * **取り消したのに詳細が開くのでは、取り消しになっていません。**
+     */
+    let swallowNextClick = false;
+
+    /**
+     * 掴んでいるあいだに届いた状態があるか。
+     *
+     * **状態そのものは捨てません。止めるのは描き直しだけです。** 捨てると
+     * 取得結果を1回分落とします。1回の全件更新で状態は十数回飛ぶので
+     * (panel.js の post)、掴んだまま描き直すと、枠の本数が変わって行の高さが
+     * 変わり (updateSummaryRow の ensureChildren)、狙っていた落とし先が指の
+     * 下から逃げます。1秒ほど数字が止まって見えるほうが実害は小さいのです。
+     */
+    let renderPending = false;
+
+    /** 最後に見たポインタの縦位置。自動スクロール中の計算し直しに使います。 */
+    let lastPointerY = 0;
+
+    /** @type {number|null} 自動スクロールの予約 (requestAnimationFrame)。 */
+    let autoScrollFrame = null;
+
+    /** 1フレームで送る量。0 なら止まっています。 */
+    let autoScrollStep = 0;
+
+    /** 縁とみなす帯の幅。**clientY と同じ空間の値です。** */
+    const EDGE_BAND = 28;
+
+    /**
+     * 1フレームあたり .content を送る量。
+     *
+     * **scrollTop は zoom の外側の単位です** (波2 が実測しました)。倍率を
+     * 上げると同じ値でも画面上は速く見えますが、ここで倍率を掛けて見た目を
+     * 揃えることはしません。ポインタ座標と scrollTop を混ぜた式を書かない、
+     * というのがこの機能全体の約束だからです。速さの違いは、目的地へ運べなく
+     * なるほどのものではありません。
+     */
+    const AUTO_SCROLL_STEP = 8;
+
+    /** @type {number|null} 応答も失敗の知らせも来ないまま固まったときの保険。 */
+    let orderTimeout = null;
+
+    /**
+     * いま画面に並んでいる順の accountId。**見えているものが正です。**
+     *
+     * 掴んでいるあいだは描き直しを止めているので、orderedAccounts() を呼び
+     * 直すと、画面に出ていない並び (その間に届いた状態で計算した並び) が返る
+     * ことがあります。落とした結果は、利用者が見ていた並びに差し込んだもので
+     * なければなりません。
+     */
+    function visibleIds() {
+        const view = views.summary;
+        if (!view || views.mode !== 'summary') {
+            return orderedAccounts().map((account) => account.id);
+        }
+        const ids = [];
+        for (const node of Array.from(view.list.children)) {
+            const id = /** @type {HTMLElement} */ (node).dataset.accountId;
+            if (id) { ids.push(id); }
+        }
+        return ids;
+    }
+
+    /**
+     * 1件を動かした並びを新しく作って返します。**元の配列は触りません。**
+     *
+     * @param {string[]} ids いまの並び
+     * @param {string} movedId 動かすもの
+     * @param {string|null} targetId 目印にする行 (null なら末尾へ)
+     * @param {boolean} before 目印の手前へ入れるか
+     * @returns {string[]}
+     */
+    function orderWithMove(ids, movedId, targetId, before) {
+        // **自分の上に落としたときは動きません。** ここを素通しにすると、
+        // 目印を除いた並びから自分自身を探すことになり、「見つからない」の
+        // 行き先 (末尾) へ飛びます。掴んだ場所にそっと戻したら末尾へ回された、
+        // というのがいちばん納得のいかない壊れ方です。
+        if (targetId === movedId) { return ids.slice(); }
+        const rest = ids.filter((id) => id !== movedId);
+        const at = targetId === null ? -1 : rest.indexOf(targetId);
+        if (at < 0) {
+            rest.push(movedId);
+            return rest;
+        }
+        rest.splice(before ? at : at + 1, 0, movedId);
+        return rest;
+    }
+
+    /**
+     * 並びを確定します。**ドラッグからもキーボードからもここへ来ます。**
+     * 経路を2本にすると、片方だけ楽観的な反映や手動への切り替えを忘れます。
+     *
+     * 保存の応答を待たずに先に描くのは、待つと「掴んで落としたのに戻った」
+     * ように見えるためです。先に描いたものを捨てる条件は releaseLocalOrder が
+     * 持っています。**ここでは捨てません。**
+     *
+     * @param {string[]} ids
+     */
+    function commitOrder(ids) {
+        // **いま居るアカウントの id だけを送ります。** 並びは画面に出ている
+        // 行から読むので (visibleIds)、掴んでいるあいだにアカウントが消えると
+        // 消えた id が混ざります。バックエンドは知らない id が1つでもあると
+        // 全体を弾くので (backend/cli.py の reorder_accounts)、利用者は何も
+        // 間違えていないのに操作が捨てられ、「タブを開き直せ」という不要な
+        // 指示まで受けます。
+        const known = new Set((state.accounts || []).map((account) => account.id));
+        ids = ids.filter((id) => known.has(id));
+        // **1件も残らなかったら送りません。** 空の並びは「全部消す」として
+        // 保存されるので (backend/cli.py の reorder_accounts)、掴んでいる間に
+        // 全部消えたというだけで、手で決めた並びが黙って失われます。
+        if (ids.length === 0) { return; }
+        localOrder = ids;
+        // **基準で並べている最中に動かしたら、手動へ切り替えます。** 基準の
+        // ままにすると、次の自動更新で並びが基準へ戻り、動かした操作が
+        // なかったことになります。設定そのものを書き換えるのは拡張ホスト側です
+        // (panel.js の case 'reorderAccounts')。ここはそれが届くまでの繋ぎです。
+        localSort = 'manual';
+        orderSaveFailed = false;
+        armOrderTimeout();
+        render();
+        vscode.postMessage({ type: 'reorderAccounts', order: ids });
+    }
+
+    /**
+     * 先に描いたものに時限を付けます。
+     *
+     * 保存の応答も失敗の知らせも来ないまま (バックエンドが固まった等)、画面が
+     * 新しい並びに張り付き続けるのを防ぎます。**普通は使われません** — 応答が
+     * 返れば releaseLocalOrder のほうが先に捨てます。
+     */
+    function armOrderTimeout() {
+        clearOrderTimeout();
+        orderTimeout = setTimeout(() => {
+            orderTimeout = null;
+            if (localOrder === null) { return; }
+            localOrder = null;
+            localSort = null;
+            if (dragging) { renderPending = true; } else { render(); }
+        }, 10000);
+    }
+
+    function clearOrderTimeout() {
+        if (orderTimeout !== null) {
+            clearTimeout(orderTimeout);
+            orderTimeout = null;
+        }
+    }
+
+    /**
+     * キーボードで1つ動かします (Alt+↑ / Alt+↓)。
+     *
+     * @param {string} accountId
+     * @param {number} delta -1 で上へ、+1 で下へ
+     */
+    function moveAccount(accountId, delta) {
+        const ids = visibleIds();
+        const at = ids.indexOf(accountId);
+        const to = at + delta;
+        if (at < 0 || to < 0 || to >= ids.length) { return; }
+        const next = ids.slice();
+        next.splice(at, 1);
+        next.splice(to, 0, accountId);
+        commitOrder(next);
+        // **焦点を行に残します。** 並べ替えは行を insertBefore で動かすので、
+        // 何もしないと焦点が body へ落ち、2回目の Alt+↓ が効きません。
+        const view = views.summary;
+        const row = view ? view.rows.get(accountId) : null;
+        if (row) { row.root.focus(); }
+    }
+
+    /**
+     * 掴み始め。**行全体ではなく、つまみからしか始まりません。**
+     *
+     * 行には「開く」の click が付いているので、行全体を掴めるようにすると、
+     * 同じ pointerdown から始まる2つの操作がぶつかり、「開こうとしたら並べ
+     * 替わる」「並べ替えようとしたら開く」のどちらかが起きます。
+     *
+     * @param {PointerEvent} event
+     * @param {string} accountId
+     * @param {HTMLElement} root
+     * @param {HTMLElement} handle
+     */
+    function beginDrag(event, accountId, root, handle) {
+        // 主ボタン以外 (右クリック等) では始めません。
+        if (dragging || event.button !== 0) { return; }
+        const view = views.summary;
+        if (!view) { return; }
+        // **選択の開始と、既定のドラッグを止めます。** setPointerCapture では
+        // どちらも止まりません。
+        event.preventDefault();
+        event.stopPropagation();
+        dragging = {
+            pointerId: event.pointerId, accountId: accountId,
+            root: root, handle: handle, targetId: null, before: true,
+        };
+        // **捕まえておきます。** 掴んだ指が行の外や画面の端へ出ても
+        // pointermove が届き続けないと、途中で印が止まります。
+        try {
+            handle.setPointerCapture(event.pointerId);
+        } catch (e) {
+            // 既に離されている等。捕まえられなくても掴み自体は続けられます。
+        }
+        view.list.classList.add('is-dragging');
+        root.classList.add('is-dragging');
+        lastPointerY = event.clientY;
+        updateDropTarget(event.clientY);
+    }
+
+    /** 掴んでいるポインタからの知らせか。 @param {PointerEvent} event */
+    function isDragPointer(event) {
+        return dragging !== null && event.pointerId === dragging.pointerId;
+    }
+
+    /** @param {PointerEvent} event */
+    function onDragMove(event) {
+        if (!dragging || event.pointerId !== dragging.pointerId) { return; }
+        event.preventDefault();
+        lastPointerY = event.clientY;
+        updateDropTarget(event.clientY);
+        updateAutoScroll(event.clientY);
+    }
+
+    /**
+     * 落とす先を決めて、印を付け替えます。
+     *
+     * **上から順に見て、ポインタより中心が下にある最初の行**が挿入位置です。
+     * どれも当てはまらなければ末尾。使うのは矩形とポインタの相対比較だけで、
+     * 倍率も、スクロール量も、絶対座標も出てきません。
+     *
+     * @param {number} clientY
+     */
+    function updateDropTarget(clientY) {
+        if (!dragging) { return; }
+        const view = views.summary;
+        if (!view) { return; }
+        const rows = Array.from(view.list.children);
+        /** @type {string|null} */
+        let targetId = null;
+        let before = true;
+        for (const node of rows) {
+            const row = /** @type {HTMLElement} */ (node);
+            const rect = row.getBoundingClientRect();
+            if (clientY < rect.top + rect.height / 2) {
+                targetId = row.dataset.accountId || null;
+                before = true;
+                break;
+            }
+        }
+        if (targetId === null && rows.length > 0) {
+            const last = /** @type {HTMLElement} */ (rows[rows.length - 1]);
+            targetId = last.dataset.accountId || null;
+            before = false;
+        }
+        if (targetId === dragging.targetId && before === dragging.before) { return; }
+        dragging.targetId = targetId;
+        dragging.before = before;
+        renderDropMarker();
+    }
+
+    /**
+     * 落とす先の印。**枠ではなく片側の線だけ**を付けます (main.css)。
+     * border にすると行の高さが変わり、掴んでいるあいだ下の行がずれ続けます。
+     */
+    function renderDropMarker() {
+        const view = views.summary;
+        if (!view) { return; }
+        const targetId = dragging ? dragging.targetId : null;
+        const before = dragging ? dragging.before : true;
+        for (const node of Array.from(view.list.children)) {
+            const row = /** @type {HTMLElement} */ (node);
+            const hit = targetId !== null && row.dataset.accountId === targetId;
+            row.classList.toggle('drop-before', hit && before);
+            row.classList.toggle('drop-after', hit && !before);
+        }
+    }
+
+    /**
+     * 縁に近づいているあいだ、一覧を送ります。
+     *
+     * **これが無いと、画面外の位置へは落とせません。** この画面は既定で
+     * エディタの隣 (半分幅) に開き、そのうえ 200% まで拡大できるので、一覧が
+     * .content に収まらないほうが普通です。掴めるつまみが出ているのに目的地へ
+     * 運べないのは、掴めないことより悪い見え方です。
+     *
+     * @param {number} clientY
+     */
+    function updateAutoScroll(clientY) {
+        const box = el.content.getBoundingClientRect();
+        if (clientY < box.top + EDGE_BAND) {
+            autoScrollStep = -AUTO_SCROLL_STEP;
+        } else if (clientY > box.bottom - EDGE_BAND) {
+            autoScrollStep = AUTO_SCROLL_STEP;
+        } else {
+            autoScrollStep = 0;
+        }
+        if (autoScrollStep !== 0 && autoScrollFrame === null) {
+            autoScrollFrame = requestAnimationFrame(stepAutoScroll);
+        }
+    }
+
+    function stepAutoScroll() {
+        autoScrollFrame = null;
+        if (!dragging || autoScrollStep === 0) { return; }
+        const before = el.content.scrollTop;
+        el.content.scrollTop = before + autoScrollStep;
+        // **送ったら落とす先を計算し直します。** 指が止まっていても行のほうが
+        // 動くので、印だけが取り残されます。
+        updateDropTarget(lastPointerY);
+        // 端に着いたら止めます (押し付けたまま回し続けても意味がありません)。
+        if (el.content.scrollTop === before) { return; }
+        autoScrollFrame = requestAnimationFrame(stepAutoScroll);
+    }
+
+    function stopAutoScroll() {
+        autoScrollStep = 0;
+        if (autoScrollFrame !== null) {
+            cancelAnimationFrame(autoScrollFrame);
+            autoScrollFrame = null;
+        }
+    }
+
+    /**
+     * 掴むのをやめます。**どんな終わり方でも必ずここを通します。**
+     *
+     * 落として終わるとは限りません (Esc、ウィンドウの非アクティブ化、タブを
+     * 隠す、ポインタの取り消し)。このパネルは隠しても生きたままなので
+     * (panel.js の retainContextWhenHidden)、後始末を忘れると、見えない画面の
+     * 中で掴んだままになり、次に開いたとき描き直しが止まったままになります。
+     *
+     * @param {boolean} commit 落とした位置で確定するか
+     */
+    function endDrag(commit) {
+        const drag = dragging;
+        if (!drag) { return; }
+        dragging = null;
+        // **離したときの click を1つ捨てます** (swallowNextClick の説明を参照)。
+        // 落として終わったときも立てておきます — そちらは click がつまみに
+        // 当たって止まるので、余ったぶんは次に押したときに下ろされます。
+        swallowNextClick = true;
+        stopAutoScroll();
+        try {
+            drag.handle.releasePointerCapture(drag.pointerId);
+        } catch (e) {
+            // 既に離れている。捕まえていないものを離しても困りません。
+        }
+        const view = views.summary;
+        if (view) { view.list.classList.remove('is-dragging'); }
+        drag.root.classList.remove('is-dragging');
+        renderDropMarker();
+
+        const ids = visibleIds();
+        const next = commit && drag.targetId !== null
+            ? orderWithMove(ids, drag.accountId, drag.targetId, drag.before)
+            : null;
+        if (next && !sameIds(next, ids)) {
+            // commitOrder が render() まで面倒を見ます。掴んでいるあいだに
+            // 溜めた状態も、そこで一緒に描かれます。
+            renderPending = false;
+            commitOrder(next);
+            return;
+        }
+        // 動かなかったときも、止めていた描き直しに追いつきます。
+        if (renderPending) {
+            renderPending = false;
+            render();
+        }
+    }
     // ---------------- 詳細 ----------------
 
     function makeMetricBlock() {
@@ -1094,6 +1724,16 @@
                 ? t('1 left')
                 : t('{count} left', { count: pending }));
         }
+
+        // **いま何順で並んでいるかを、押す前に見せます。** title だけだと
+        // ホバーしなければ読めないので、基準で並べているあいだは ⇅ 自体を
+        // 目立たせます。手で並べた順のままなら、素のままにしておきます。
+        const sort = currentSort();
+        // **機能名を落としません。** 状態名だけにすると、押すと何が起きる
+        // ボタンなのかがツールチップから読み取れなくなります (🌐 と ⚙ は
+        // 機能名を出しています)。新しい原文は足さず、既にある2つを繋ぎます。
+        el.sort.title = t('Sort') + ': ' + sortLabel(sort);
+        el.sort.classList.toggle('active', sort !== 'manual');
     }
 
     function renderStatus() {
@@ -1135,6 +1775,116 @@
         }
     }
 
+    // ---------------- 拡大縮小 ----------------
+    //
+    // **この画面だけを拡大します** (VSCode 全体ではありません)。倍率は
+    // document.body の zoom に入れるので、px で決め打ちにした余白もゲージの
+    // 高さも角の丸みも、CSS を1行も変えずに一緒に付いてきます。**寸法を
+    // 個別に換算する方式は採りません** — main.css には追随させるべき px が
+    // 80 箇所ほどあり、1つ取りこぼすと「文字だけ大きくなって余白が付いて
+    // こない」という、高倍率にしないと気づけない壊れ方をします。
+
+    /**
+     * 選べる倍率 (%)。
+     *
+     * 段を決め打ちにしているのは、1% ずつ動かせても使い道が無いからです。
+     * ホイールを一度回すごとに、見て分かるだけ変わってほしいのです。
+     */
+    const ZOOM_STEPS = [50, 67, 80, 90, 100, 110, 125, 150, 175, 200];
+
+    /**
+     * いまの倍率。**panel.js が HTML に埋めた値から始めます**
+     * (window.__zoom)。
+     *
+     * **状態 (post) では受け取りません。** あちらは取得のたびに十数回飛ぶので、
+     * ホイールで連続的に変えている最中に古い値が届いて倍率が跳ねます。
+     * 一方向 (開くときに1回もらい、以後はこちらが持ち主) にすれば、
+     * その競合が原理的に起きません。
+     */
+    let zoom = clampZoom(window.__zoom);
+
+    /** @type {number|null} 設定への書き込みを落ち着くまで待つタイマー。 */
+    let zoomSaveTimer = null;
+
+    function clampZoom(value) {
+        // **数かどうかを先に見ます。** Number(null) と Number('') は 0 なので、
+        // isFinite だけでは素通りして下限の 50% に丸められます。設定ファイルは
+        // 人が直接書き換えられる場所なので、意味を成さない値は等倍へ倒します。
+        if (typeof value !== 'number' || !isFinite(value)) { return 100; }
+        return Math.max(ZOOM_STEPS[0],
+            Math.min(ZOOM_STEPS[ZOOM_STEPS.length - 1], Math.round(value)));
+    }
+
+    /**
+     * いまの倍率から1段ぶん動かした倍率を返します。
+     *
+     * **段の間の値からでも動きます。** 設定ファイルは人が直接書き換えられる
+     * ので、137 のような値が入っていることがあります。「いまの値より大きい/
+     * 小さい最初の段」を選ぶことで、そこからでも1回目の ＋/− が効きます。
+     */
+    function steppedZoom(delta) {
+        if (delta > 0) {
+            for (let i = 0; i < ZOOM_STEPS.length; i++) {
+                if (ZOOM_STEPS[i] > zoom) { return ZOOM_STEPS[i]; }
+            }
+            return ZOOM_STEPS[ZOOM_STEPS.length - 1];
+        }
+        for (let i = ZOOM_STEPS.length - 1; i >= 0; i--) {
+            if (ZOOM_STEPS[i] < zoom) { return ZOOM_STEPS[i]; }
+        }
+        return ZOOM_STEPS[0];
+    }
+
+    /**
+     * 倍率を画面に当てます。**変わったときだけ書きます** (setText と同じ理由)。
+     *
+     * **スクロール位置には触りません。** 実測したところ (Chromium 149)、
+     * .content の scrollTop は zoom の外側の単位で、倍率を変えても値も
+     * 「画面の上端に出ている行」も変わりませんでした。ここで倍率比を掛けて
+     * 補正すると、かえって見ていた行が画面外へ飛びます (100% → 200% で
+     * 2倍にすると、3行ぶん下へ送られました)。**足さないでください。**
+     *
+     * @param {number} next 当てたい倍率 (%)
+     * @param {boolean} save 設定へ書き戻すか
+     */
+    function applyZoom(next, save) {
+        const value = clampZoom(next);
+        // **上限・下限に張り付いているときは何もしません。** ここを素通しに
+        // すると、200% でホイールを回し続けている間ずっと settings.json へ
+        // 同じ値を書き続けることになります。
+        if (value === zoom) { return; }
+        zoom = value;
+        document.body.style.zoom = String(zoom / 100);
+        renderZoom();
+        if (save) { scheduleZoomSave(); }
+    }
+
+    function renderZoom() {
+        setText(el.zoomLevel, t('{percent}%', { percent: zoom }));
+        el.zoomOut.disabled = zoom <= ZOOM_STEPS[0];
+        el.zoomIn.disabled = zoom >= ZOOM_STEPS[ZOOM_STEPS.length - 1];
+    }
+
+    /** 設定への書き込みは落ち着いてから1回だけ (ホイールは連続で来ます)。 */
+    function scheduleZoomSave() {
+        if (zoomSaveTimer !== null) { clearTimeout(zoomSaveTimer); }
+        zoomSaveTimer = setTimeout(flushZoomSave, 400);
+    }
+
+    /**
+     * 待っている書き込みを、いますぐ出します。
+     *
+     * **画面が消える前に必ず呼びます。** 言語を切り替えると拡張ホストが
+     * webview を作り直すので (panel.js の refreshHtml)、倍率を変えてから
+     * 400ms 以内に言語を変えると、その倍率は保存されないまま消えます。
+     */
+    function flushZoomSave() {
+        if (zoomSaveTimer === null) { return; }
+        clearTimeout(zoomSaveTimer);
+        zoomSaveTimer = null;
+        vscode.postMessage({ type: 'setZoom', percent: zoom });
+    }
+
     // ---------------- 配線 ----------------
 
     el.refresh.addEventListener('click', () => {
@@ -1165,15 +1915,106 @@
         vscode.postMessage({ type: 'selectLanguage' });
     });
 
+    // 並べ方も、選ばせるのは拡張ホスト側です (言語と同じ理由 — webview からは
+    // 設定を書けません)。選ばれた結果は状態に乗って戻ってきます。
+    el.sort.addEventListener('click', () => {
+        vscode.postMessage({ type: 'selectSort' });
+    });
+
+    el.zoomOut.addEventListener('click', () => applyZoom(steppedZoom(-1), true));
+    el.zoomIn.addEventListener('click', () => applyZoom(steppedZoom(+1), true));
+    // 「100%」の表示そのものが、等倍へ戻すボタンです。Ctrl+0 は VSCode 本体が
+    // 別の用途 (サイドバーへ移動) に使っているので、割り当てていません。
+    el.zoomLevel.addEventListener('click', () => applyZoom(100, true));
+
+    // **{ passive: false } が要ります。** window に付けた wheel は既定で
+    // passive 扱いになり、preventDefault() が効きません。効かないと、
+    // Chromium 自身の iframe ズームが同時に走ります。
+    //
+    // ここで完結させられるのは、VSCode が webview 内の Ctrl+ホイールを
+    // 取っていないためです (webview のプリロードはホストへ ctrlKey を
+    // 送っておらず、editor.mouseWheelZoom も既定で無効です)。キーボードの
+    // ほうは事情が違います (panel.js の nudgeZoom を参照)。
+    window.addEventListener('wheel', (event) => {
+        if (!event.ctrlKey) { return; }
+        // **縦に回っていないものは倍率を動かしません。** 下の三項は deltaY が
+        // 0 のとき「縮小」に落ちるので、トラックパッドの横方向で Ctrl を押して
+        // いるだけで縮みます。preventDefault より先に返して、横スクロールその
+        // ものは邪魔しないでおきます。
+        if (!event.deltaY) { return; }
+        event.preventDefault();
+        applyZoom(steppedZoom(event.deltaY < 0 ? +1 : -1), true);
+    }, { passive: false });
+
+    // 画面が隠される/捨てられるときに、待っている書き込みを出します。
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            flushZoomSave();
+            endDrag(false);
+        }
+    });
+    window.addEventListener('pagehide', () => flushZoomSave());
+
+    // **掴んだまま画面から離れられます。** 落とすまで必ず完走するという
+    // 前提には立てないので、取り消される道を全部塞いでおきます。
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && dragging) {
+            event.preventDefault();
+            endDrag(false);
+        }
+    });
+    window.addEventListener('blur', () => endDrag(false));
+
+    // **掴みが終わったあとの click を1つだけ捨てます** (swallowNextClick の
+    // 説明を参照)。捨てるのは window の捕まえ段階で、行に届く前です。
+    window.addEventListener('click', (event) => {
+        if (!swallowNextClick) { return; }
+        swallowNextClick = false;
+        event.stopPropagation();
+    }, true);
+    // **押し直したら、もう捨てません。** click は必ず pointerdown のあとに
+    // 来るので、click が来ないまま終わったとき (行の外で離した等) の消し忘れ
+    // が、次の関係のない click を飲み込むことはありません。
+    window.addEventListener('pointerdown', () => { swallowNextClick = false; }, true);
+
     window.addEventListener('message', (event) => {
         const message = event.data;
-        if (message && message.type === 'state') {
+        if (!message) { return; }
+        if (message.type === 'state') {
+            // **状態は必ず受け取ります。** 捨てると取得結果を1回分落とします。
             state = message;
+            // 先に描いたものを捨てるかどうかは、掴んでいるかとは関係ありません。
+            releaseLocalOrder(message);
+            // **掴んでいるあいだは描き直しだけを止めます** (renderPending の
+            // 説明を参照)。離したときに endDrag が追いつかせます。
+            if (dragging) {
+                renderPending = true;
+                return;
+            }
             render();
+            return;
+        }
+        // 並び順を保存できなかったという知らせ (panel.js の case
+        // 'reorderAccounts')。**推測では立てません。** これが無いと、画面は
+        // 直後に届く状態を「保存の応答より先に来た自動更新」と区別できず、
+        // 先に描いたぶんを捨てられません。
+        if (message.type === 'orderFailed') {
+            orderSaveFailed = true;
+            return;
+        }
+        // 拡大縮小のキー操作だけは拡張ホストから届きます (panel.js の
+        // nudgeZoom)。**キーは webview では拾えません。**
+        if (message.type === 'zoom') {
+            applyZoom(steppedZoom(Number(message.delta) < 0 ? -1 : +1), true);
         }
     });
 
     setInterval(tickCountdowns, 1000);
+
+    // **描く前に当てます。** あとから当てると、等倍で1度描いたものが
+    // 目の前で伸び縮みするのが見えます。
+    document.body.style.zoom = String(zoom / 100);
+    renderZoom();
 
     render();
     vscode.postMessage({ type: 'ready' });

@@ -47,7 +47,23 @@ DEFAULT_SETTINGS = {
     "show_sidebar": True,      # 左のアカウント一覧を出すか
     # 前回サマリーを見ていたか。初回は全体像から入れるようサマリーで開く。
     "show_summary": True,
+    # 画面に出すアカウントの並び (accountId の配列)。**accounts 配列そのものは
+    # 並べ替えません。** あちらの格納順は「追加した順」そのもので、上書きすると
+    # 「追加した順」に並べ替える手立てが無くなります。
+    "account_order": [],
 }
+
+
+def _default_settings() -> dict:
+    """DEFAULT_SETTINGS の複製を作ります。
+
+    **list の既定値は必ず作り直します。** dict(DEFAULT_SETTINGS) は浅い
+    コピーなので、可変の list をそのまま持つとモジュール全体で1つの
+    オブジェクトを共有し、あるインスタンスの並べ替えが他のインスタンスにも
+    既定値にも伝わってしまいます。
+    """
+    return {key: (list(value) if isinstance(value, list) else value)
+            for key, value in DEFAULT_SETTINGS.items()}
 
 # 保存時に暗号化する設定項目
 SECRET_SETTINGS = {"proxy_password"}
@@ -129,7 +145,7 @@ class ConfigManager:
         # 起動時に旧パスから移行した場合、移行元のパスを保持する
         self.migrated_from: str = None
 
-        self.settings = dict(DEFAULT_SETTINGS)
+        self.settings = _default_settings()
 
     # ---------------- 移行処理 ----------------
 
@@ -163,7 +179,7 @@ class ConfigManager:
         """アカウント一覧とアプリ設定をまとめて読み込みます。"""
         self.load_warnings = []
         self.load_failed = False
-        self.settings = dict(DEFAULT_SETTINGS)
+        self.settings = _default_settings()
 
         if not os.path.exists(self.config_path):
             return [], self.settings
@@ -206,6 +222,13 @@ class ConfigManager:
                             ))
                         text = decrypted
                     self.settings[key] = text
+                elif isinstance(default, list):
+                    # **必ず新しいリストにします。** 既定値の list をそのまま
+                    # 持つと DEFAULT_SETTINGS 側の実体を共有してしまい、
+                    # 並べ替えが既定値を書き換えます。
+                    self.settings[key] = ([str(v) for v in value]
+                                          if isinstance(value, list)
+                                          else list(default))
 
         accounts_data = data.get("accounts", [])
         if not isinstance(accounts_data, list):
