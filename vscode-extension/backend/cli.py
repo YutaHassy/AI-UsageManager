@@ -331,6 +331,48 @@ class Backend:
         profile_storage.remove_profile(account.id)
         return {"ok": True, "accountId": account.id}
 
+    def reorder_accounts(self, order: list) -> dict:
+        """画面に出す並び順を保存します。**accounts 配列は動かしません。**
+
+        あちらの格納順は「追加した順」そのもので、書き換えると
+        「追加した順」に並べ替える手立てが無くなります (snapshot が
+        accounts をそのまま渡し、画面側が accountOrder と突き合わせます)。
+
+        **全件そろっている必要はありません。** 突き合わせは画面側が毎回
+        行うので、足りない id があっても壊れません。弾くのは「知らない id が
+        混ざっている」「同じ id が二度出る」ときだけです。どちらも画面が
+        持っている一覧と手元の一覧がずれている印で、そのまま保存すると
+        利用者が見ていたのとは違う並びが残ります。
+
+        **例外は投げません** (要求への応答を必ず1つ返すため)。
+        """
+        known = {a.id for a in self.accounts}
+        wanted = [str(i) for i in (order or [])]
+        if len(set(wanted)) != len(wanted) or not set(wanted) <= known:
+            return {"ok": False, "error": t(
+                "The account list has changed. Open the tab again and try once more.")}
+
+        kept = list(self.config_manager.settings.get("account_order") or [])
+        self.config_manager.settings["account_order"] = wanted
+        try:
+            saved = self.save()
+        except Exception:  # noqa: BLE001
+            # ConfigManager.save は現実的な失敗 (OSError 等) を自分で握って
+            # False を返しますが、それ以外で抜けると下の巻き戻しが飛ばされ、
+            # **保存されていない並びが手元だけ正しいものとして残ります。**
+            # ここで受けるのは、例外を投げない約束 (docstring) のためでも
+            # あります。
+            logger.error("並び順の保存に失敗:\n%s", traceback.format_exc())
+            saved = False
+        if not saved:
+            # delete_account と同じ作法です。**保存できなかったものを、
+            # 保存できたことにしません。** 手元だけ変えると、次に読み直した
+            # ときに前の並びが戻ってきます。
+            self.config_manager.settings["account_order"] = kept
+            return {"ok": False, "error": t(
+                "The settings could not be saved. See the log for details.")}
+        return {"ok": True}
+
     # 変更を頼まれていない項目の印。
     #
     # **None を使えません。** 「名前を変えない」と「名前を空にする」は
@@ -643,6 +685,10 @@ class Backend:
         return {
             "accounts": [self.account_payload(a) for a in self.accounts],
             "fetchable": [a.id for a in self.accounts if self.is_fetchable(a)],
+            # 画面に出す並び。**accounts はここでは並べ替えません。**
+            # あちらの順が「追加した順」そのものなので、突き合わせは
+            # 画面側に任せます (reorder_accounts の説明を参照)。
+            "accountOrder": list(self.config_manager.settings.get("account_order") or []),
             "configPath": self.config_manager.config_path,
             "configDir": default_config_dir(),
             "loadError": self.load_error,
@@ -864,6 +910,13 @@ class Dispatcher:
         if not self.backend.save():
             reply_error(request_id, t(
                 "The settings could not be saved. See the log for details."))
+            return
+        reply(request_id, self.backend.snapshot())
+
+    def do_reorder_accounts(self, request_id, params):
+        result = self.backend.reorder_accounts(params.get("order") or [])
+        if not result.get("ok"):
+            reply_error(request_id, result["error"])
             return
         reply(request_id, self.backend.snapshot())
 

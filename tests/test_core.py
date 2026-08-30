@@ -158,6 +158,51 @@ class TestConfigManager(unittest.TestCase):
         self.assertTrue(settings["auto_update_enabled"])
         self.assertEqual(settings["auto_update_interval_minutes"], 30)
 
+    def test_a_list_setting_is_persisted(self):
+        """**list を既定値に持つ設定が保存され、読み直せること。**
+
+        読み込みループは bool / int / str の3分岐しかなかったので、list を
+        既定値に置くとどの分岐にも入らず、ファイルの値が黙って捨てられて
+        いました。account_order (画面に出すアカウントの並び) がこの型です。
+        """
+        cm = ConfigManager(self.path)
+        cm.save([], {"account_order": ["b", "a", "c"]})
+        _, settings = ConfigManager(self.path).load()
+        self.assertEqual(settings["account_order"], ["b", "a", "c"])
+
+    def test_a_missing_list_setting_falls_back_to_the_default(self):
+        """**後方互換。** キーの無い古い設定ファイルでも既定値で動くこと。
+
+        v1.7.0 やデスクトップ版が書いた config.json には account_order が
+        ありません。読めなくなったり例外になったりしないこと。
+        """
+        self._write({"settings": {"auto_update_enabled": True}, "accounts": []})
+        _, settings = ConfigManager(self.path).load()
+        self.assertEqual(settings["account_order"], [])
+        self.assertTrue(settings["auto_update_enabled"])
+
+    def test_a_broken_list_setting_falls_back_to_the_default(self):
+        """型が壊れていても既定値に倒して起動を止めないこと (他の型と同じ扱い)。"""
+        self._write({"settings": {"account_order": "並びではない文字列"},
+                     "accounts": []})
+        _, settings = ConfigManager(self.path).load()
+        self.assertEqual(settings["account_order"], [])
+
+    def test_a_list_setting_is_not_shared_between_instances(self):
+        """**既定値の list を共有しないこと。**
+
+        self.settings は dict(DEFAULT_SETTINGS) の浅いコピーだったので、
+        list をそのまま持つとモジュール全体で1つのオブジェクトを共有し、
+        片方の並べ替えがもう片方にも DEFAULT_SETTINGS にも伝わりました。
+        """
+        from services.config_manager import DEFAULT_SETTINGS
+
+        first = ConfigManager(self.path)
+        second = ConfigManager(os.path.join(self.dir, "other.json"))
+        first.settings["account_order"].append("acc-1")
+        self.assertEqual(second.settings["account_order"], [])
+        self.assertEqual(DEFAULT_SETTINGS["account_order"], [])
+
     def test_one_broken_entry_does_not_wipe_the_others(self):
         """1件の破損で全アカウントが消えないこと。"""
         self._write({"accounts": [

@@ -44,6 +44,55 @@ function escapeHtml(value) {
 }
 
 /**
+ * 画面の拡大率 (%) を設定から読みます。
+ *
+ * **必ず数を返します。** この値は HTML の中へ数値として埋め込むので
+ * (html() の window.__zoom)、文字列が混ざると webview 側で扱いが変わります。
+ * package.json の minimum / maximum は設定 UI の入力検査であって、
+ * settings.json に書かれた値の保証ではありません。**あのファイルは人が
+ * 直接開いて書き換えられる場所です。**
+ *
+ * @returns {number}
+ */
+function zoomLevel() {
+    const value = vscode.workspace
+        .getConfiguration('aiUsageManager').get('zoomLevel', 100);
+    // **数かどうかを先に見ます。** Number(null) と Number('') は 0 なので、
+    // Number.isFinite だけでは素通りして下限の 50% に丸められます。書き換えて
+    // 壊れている値に対しては、いちばん目立たない等倍へ倒すのが安全です。
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+        return 100;
+    }
+    return Math.min(200, Math.max(50, Math.round(value)));
+}
+
+/**
+ * 設定 aiUsageManager.accountSort の書き込み先を選びます。
+ *
+ * **既定は Global のままです** (selectLanguage / zoomLevel と同じ作法。並べ方は
+ * 「この人にとっての見やすさ」であって、ワークスペースの性質ではありません)。
+ *
+ * ただしワークスペースに値を持っている人には、Global へ書いても届きません。
+ * 実効値はワークスペースが優先するので、post() が送り返す sort は前の基準の
+ * ままです。**ドラッグで手動へ切り替えたつもりが、保存の応答が届いた時点で
+ * 元の並びへ戻ります** — 動かした操作がなかったことになります。そこで、
+ * **既に値が住んでいる場所があるならそこへ書きます。** 書き込む場所を増やす
+ * ことはしないので、ワークスペース設定を使っていない人には今までどおりです。
+ *
+ * フォルダ単位の値は取り得ません (package.json に scope の指定が無く、既定の
+ * window スコープはフォルダ単位の値を持てません)。
+ *
+ * @returns {vscode.ConfigurationTarget}
+ */
+function accountSortTarget() {
+    const info = vscode.workspace
+        .getConfiguration('aiUsageManager').inspect('accountSort');
+    return info && info.workspaceValue !== undefined
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
+}
+
+/**
  * 追加・編集のフォームの状態。
  *
  * **これが載っている間、画面はフォームを最前面に出します。** null なら
@@ -147,9 +196,17 @@ class UsagePanel {
             return UsagePanel.current;
         }
 
-        // **新しく作るときだけ、置き場所を決めます。** 今見ているものの隣に
-        // 出したいので、アクティブなエディタの列を使います。
-        const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
+        // **新しく作るときだけ、置き場所を決めます。** 既定は「隣のグループに
+        // 開く」(aiUsageManager.openLocation) で、作業中のタブを覆わないように
+        // ViewColumn.Beside を使います。利用者が設定で「同じグループ」を選んで
+        // いれば、従来どおりアクティブなエディタの列 (無ければ列 1) を使います。
+        // **列を決める箇所はここだけです。** 復元経路 (下の deserializeWebviewPanel)
+        // は VSCode が復元した位置をそのまま使うので、列には触れません。
+        const openLocation = vscode.workspace
+            .getConfiguration('aiUsageManager').get('openLocation', 'beside');
+        const column = openLocation === 'beside'
+            ? vscode.ViewColumn.Beside
+            : (vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One);
         const panel = vscode.window.createWebviewPanel(
             UsagePanel.viewType,
             t('AI Usage'),
@@ -253,6 +310,24 @@ class UsagePanel {
         this.panel.webview.html = this.html();
     }
 
+    /**
+     * 拡大率を1段だけ動かします。
+     *
+     * **Ctrl+ +/- は webview の中では拾えません。** あちらのキー入力は
+     * preventDefault() に関わらず VSCode 本体へ転送され、本体の「ウィンドウを
+     * 拡大」が同時に走ります (二重ズームになります)。そこで package.json の
+     * contributes.keybindings で同じキーを取り、when でこのタブが前面のときだけ
+     * extension.js のコマンドへ回して、ここから webview へ伝えます。
+     *
+     * 段の刻みと上下限は webview 側が持っています。**倍率の持ち主を1つに
+     * するため**で、こちらは向きだけを伝えます。
+     *
+     * @param {number} delta -1 で1段小さく、+1 で1段大きく
+     */
+    nudgeZoom(delta) {
+        void this.panel.webview.postMessage({ type: 'zoom', delta: delta });
+    }
+
     /** 現在の状態をまるごと送ります (差分は取りません)。 */
     post() {
         const snapshot = this.store.snapshot;
@@ -274,6 +349,14 @@ class UsagePanel {
             configPath: snapshot?.configPath ?? '',
             loadError: snapshot?.loadError ?? null,
             encryptionAvailable: snapshot?.encryptionAvailable ?? true,
+            // **並べ替えはここではしません。** accounts の並びは「追加した順」
+            // そのもので (backend/cli.py の snapshot)、利用者が手で決めた並びは
+            // accountOrder として別に届きます。その2つと基準 (sort) を突き合わせて
+            // 表示順を決めるのは画面側です (media/main.js の orderedAccounts)。
+            // ここで並べ替えてしまうと、基準「追加した順」に戻す手立てが無くなります。
+            accountOrder: snapshot?.accountOrder ?? [],
+            sort: vscode.workspace.getConfiguration('aiUsageManager')
+                .get('accountSort', 'manual'),
             // 追加・編集のフォーム。開いていなければ null です。
             form: this._form,
         });
@@ -532,6 +615,81 @@ class UsagePanel {
             case 'selectLanguage':
                 await vscode.commands.executeCommand('aiUsageManager.selectLanguage');
                 return;
+            case 'selectSort':
+                // 言語と同じで、選ばせるのは拡張ホスト側です (webview からは
+                // 設定を書けません)。選ばれた結果は onDidChangeConfiguration が
+                // 拾って post() し直します (extension.js の selectSort)。
+                await vscode.commands.executeCommand('aiUsageManager.selectSort');
+                return;
+            case 'reorderAccounts': {
+                const config = vscode.workspace.getConfiguration('aiUsageManager');
+                const previousSort = config.get('accountSort', 'manual');
+                const sortTarget = accountSortTarget();
+                let sortChanged = false;
+                try {
+                    // **先に基準を「手で並べた順のまま」へ戻します。** 何かの
+                    // 基準で並べている最中に手で動かしたのなら、落とした位置に
+                    // 残るのが唯一まともな挙動です。基準のままにすると、次の
+                    // 自動更新で並びが基準へ戻り、動かした操作がなかったことに
+                    // なります。
+                    //
+                    // **順番が大事で、保存より後にしてはいけません。** 後だと、
+                    // 保存の応答 (post) が「新しい並び + 古い基準」で先に届き、
+                    // 画面が一度だけ基準の並びへ戻ってから手動へ変わります
+                    // (media/main.js の releaseLocalOrder を参照)。
+                    if (previousSort !== 'manual') {
+                        await config.update('accountSort', 'manual', sortTarget);
+                        sortChanged = true;
+                    }
+                    await this.store.reorderAccounts(
+                        (message.order || []).map((id) => String(id)));
+                } catch (e) {
+                    // **先に書いた基準を戻します。** 並びは保存されていないのに
+                    // 基準だけが書き換わったままだと、利用者が選んでいた並べ方が
+                    // 失敗した操作の副作用として消えます。選び直すしかないうえ、
+                    // 消えたことはどこにも出ません。
+                    if (sortChanged) {
+                        try {
+                            await vscode.workspace.getConfiguration('aiUsageManager')
+                                .update('accountSort', previousSort, sortTarget);
+                        } catch (e2) {
+                            // 戻すのも失敗しました。伝えるのは下の1つだけに
+                            // します — 続けて2つ出しても、できることは増えません。
+                        }
+                    }
+                    void vscode.window.showErrorMessage(
+                        t('The order could not be saved: {reason}',
+                            { reason: /** @type {Error} */ (e).message }));
+                    // **失敗したことを画面へ伝えます。** 画面は落とした位置を
+                    // 先に描いているので、伝えないと保存できていないことが
+                    // 分かりません。post() を送り直すだけでは足りません —
+                    // 画面から見ると、それは「保存の応答より先に来た自動更新」と
+                    // 区別が付かず、先に描いたぶんを捨ててよいのか決められません
+                    // (media/main.js の releaseLocalOrder を参照)。
+                    void this.panel.webview.postMessage({ type: 'orderFailed' });
+                    this.post();
+                }
+                return;
+            }
+            case 'setZoom':
+                // **書き留めるだけで、書いた値を送り返しません。** 倍率を
+                // 持っているのは webview 側です。ホイールで連続的に変わる値を
+                // post() (取得のたびに十数回飛びます) に相乗りさせると、
+                // 設定へ書き終わる前の古い値が戻ってきて倍率が跳ねます。
+                //
+                // 書き込み先が Global なのは、倍率が「この人が見やすい大きさ」
+                // であってワークスペースの性質ではないためです (言語と同じ
+                // 理由。extension.js の selectLanguage を参照)。
+                try {
+                    await vscode.workspace.getConfiguration('aiUsageManager')
+                        .update('zoomLevel', Number(message.percent),
+                            vscode.ConfigurationTarget.Global);
+                } catch (e) {
+                    void vscode.window.showErrorMessage(
+                        t('Could not change the setting: {reason}',
+                            { reason: /** @type {Error} */ (e).message }));
+                }
+                return;
         }
     }
 
@@ -575,6 +733,12 @@ class UsagePanel {
     </div>
     <div class="spacer"></div>
     <span id="progress" class="progress hidden"></span>
+    <span class="zoom">
+        <button id="zoom-out" class="icon-button" type="button" title="${escapeHtml(t('Zoom out'))}">−</button>
+        <button id="zoom-level" class="icon-button zoom-level" type="button" title="${escapeHtml(t('Reset to 100%'))}"></button>
+        <button id="zoom-in" class="icon-button" type="button" title="${escapeHtml(t('Zoom in'))}">＋</button>
+    </span>
+    <button id="sort" class="icon-button" type="button" title="${escapeHtml(t('Sort'))}">⇅</button>
     <button id="language" class="icon-button" type="button" title="${escapeHtml(t('Language'))}">🌐</button>
     <button id="settings" class="icon-button" type="button" title="${escapeHtml(t('Open Settings'))}">⚙</button>
     <button id="refresh" class="primary" type="button">${escapeHtml(t('Refresh'))}</button>
@@ -583,11 +747,11 @@ class UsagePanel {
     <div id="panel-host"></div>
 </main>
 <footer class="statusline"><span id="status"></span></footer>
-<script nonce="${id}">window.__l10n = ${strings};</script>
+<script nonce="${id}">window.__l10n = ${strings}; window.__zoom = ${zoomLevel()};</script>
 <script nonce="${id}" src="${script}"></script>
 </body>
 </html>`;
     }
 }
 
-module.exports = { UsagePanel };
+module.exports = { UsagePanel, accountSortTarget };

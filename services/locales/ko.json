@@ -116,6 +116,7 @@
   "The access token has expired and there is no refresh_token. Sign in again.": "액세스 토큰이 만료되었고 refresh_token 도 없습니다. 다시 로그인하세요.",
   "The accessToken you pasted expired at {when}.\nOpen https://chatgpt.com/api/auth/session in a browser and get a new accessToken.": "붙여 넣은 accessToken 은 {when} 에 만료되었습니다.\n브라우저에서 https://chatgpt.com/api/auth/session 을 열어 accessToken 을 다시 받으세요.",
   "The account definition is not an object: {kind}": "계정 정의가 객체가 아닙니다: {kind}",
+  "The account list has changed. Open the tab again and try once more.": "계정 목록이 바뀌었습니다. 탭을 다시 연 다음 한 번 더 시도해 주세요.",
   "The account was not found (the settings may have changed).": "계정을 찾을 수 없습니다(설정이 변경되었을 수 있습니다).",
   "The account was not found.": "계정을 찾을 수 없습니다.",
   "The connection failed.\n\n{reason}": "연결에 실패했습니다.\n\n{reason}",

@@ -20,7 +20,7 @@ const {
     configuredLanguage, LANGUAGES, t,
 } = require('./i18n');
 const { LauncherViewProvider } = require('./launcher');
-const { UsagePanel } = require('./panel');
+const { UsagePanel, accountSortTarget } = require('./panel');
 const { UsageStore } = require('./store');
 
 /** @type {Backend} */
@@ -100,6 +100,19 @@ function activate(context) {
         vscode.commands.registerCommand('aiUsageManager.openSettings', () =>
             vscode.commands.executeCommand('workbench.action.openSettings', 'aiUsageManager')),
         vscode.commands.registerCommand('aiUsageManager.selectLanguage', () => selectLanguage()),
+        vscode.commands.registerCommand('aiUsageManager.selectSort', () => selectSort()),
+        // **Ctrl+ +/- を webview の中では拾えないので、ここへ回します。**
+        // あちらのキー入力は preventDefault() に関わらず VSCode 本体へ転送
+        // され、本体の「ウィンドウを拡大」が同時に走ります。package.json の
+        // contributes.keybindings で同じキーを取り (when でこのタブが前面の
+        // ときだけ)、そこからこのコマンドが呼ばれます。
+        //
+        // **タブが開いていなければ何もしません。** when 句があるので普段は
+        // 起きませんが、コマンドパレットからも叩けます。
+        vscode.commands.registerCommand('aiUsageManager.zoomIn',
+            () => UsagePanel.current?.nudgeZoom(+1)),
+        vscode.commands.registerCommand('aiUsageManager.zoomOut',
+            () => UsagePanel.current?.nudgeZoom(-1)),
         vscode.commands.registerCommand('aiUsageManager.setProxyPassword', () => setProxyPassword()),
         vscode.commands.registerCommand('aiUsageManager.testProxy', () => testProxy()),
         vscode.commands.registerCommand('aiUsageManager.importProxyFromEnvironment',
@@ -145,6 +158,11 @@ function activate(context) {
             }
             if (e.affectsConfiguration('aiUsageManager.language')) {
                 applyLanguageChange();
+            }
+            if (e.affectsConfiguration('aiUsageManager.accountSort')) {
+                // **並べるのは画面側です** (media/main.js の orderedAccounts)。
+                // ここは今の設定を届け直すだけでよく、バックエンドは要りません。
+                UsagePanel.current?.post();
             }
             if (e.affectsConfiguration('aiUsageManager.autoRefreshMinutes')) {
                 scheduleAutoRefresh();
@@ -283,6 +301,55 @@ async function selectLanguage() {
     await vscode.workspace
         .getConfiguration('aiUsageManager')
         .update('language', choice.tag, vscode.ConfigurationTarget.Global);
+    // 反映そのものは onDidChangeConfiguration が拾います (設定画面から直接
+    // 変えられたときも同じ道を通す必要があるため、ここではやりません)。
+}
+
+/**
+ * アカウントの並べ方を選ばせて、設定 aiUsageManager.accountSort に書きます。
+ *
+ * **選ばせるのを拡張ホスト側に置いているのは、webview からは設定を書けない
+ * ため**です (selectLanguage と同じ形。画面のツールバーの ⇅ からここへ来ます)。
+ *
+ * 書き込み先は既定で Global です。並べ方が「この人にとっての見やすさ」で
+ * あってワークスペースの性質ではないためで、言語・倍率と同じ理由です。
+ * **ワークスペースに値を持っている人だけは、そちらへ書きます** — Global へ
+ * 書いても実効値が変わらず、選んだのに並びが変わらないためです
+ * (panel.js の accountSortTarget を参照)。
+ *
+ * **基準で並べても、手で並べた順は消えません。** あちらは config.json の
+ * settings.account_order に残り続けるので、「手で並べた順のまま」を選び直せば
+ * そのまま戻ってきます (backend/cli.py の reorder_accounts を参照)。
+ *
+ * @returns {Promise<void>}
+ */
+async function selectSort() {
+    const current = vscode.workspace
+        .getConfiguration('aiUsageManager').get('accountSort', 'manual');
+    // **並びは package.json の enum と同じにしてあります。** 設定画面から
+    // 選んだときとこちらとで、選択肢の順番が違うと同じ設定に見えません。
+    const items = [
+        { label: t('Keep the order you arranged by hand'), tag: 'manual' },
+        { label: t('Highest usage first'), tag: 'usage' },
+        { label: t('By name'), tag: 'name' },
+        { label: t('By provider'), tag: 'provider' },
+        { label: t('In the order they were added'), tag: 'added' },
+    ].map((entry) => ({
+        label: entry.label,
+        tag: entry.tag,
+        description: current === entry.tag ? '$(check)' : undefined,
+    }));
+
+    const choice = await vscode.window.showQuickPick(items, {
+        placeHolder: t('Select how the accounts are ordered'),
+    });
+    if (!choice || choice.tag === current) {
+        return;
+    }
+
+    await vscode.workspace
+        .getConfiguration('aiUsageManager')
+        .update('accountSort', choice.tag, accountSortTarget());
     // 反映そのものは onDidChangeConfiguration が拾います (設定画面から直接
     // 変えられたときも同じ道を通す必要があるため、ここではやりません)。
 }

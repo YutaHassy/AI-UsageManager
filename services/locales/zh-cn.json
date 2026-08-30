@@ -116,6 +116,7 @@
   "The access token has expired and there is no refresh_token. Sign in again.": "访问令牌已过期，且没有 refresh_token。请重新登录。",
   "The accessToken you pasted expired at {when}.\nOpen https://chatgpt.com/api/auth/session in a browser and get a new accessToken.": "粘贴的 accessToken 已于 {when} 失效。\n请在浏览器中打开 https://chatgpt.com/api/auth/session 重新获取 accessToken。",
   "The account definition is not an object: {kind}": "账号定义不是对象：{kind}",
+  "The account list has changed. Open the tab again and try once more.": "账号列表已发生变化。请重新打开标签页后再试一次。",
   "The account was not found (the settings may have changed).": "未找到该账号（设置可能已更新）。",
   "The account was not found.": "未找到该账号。",
   "The connection failed.\n\n{reason}": "连接失败。\n\n{reason}",

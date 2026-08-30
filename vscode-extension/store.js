@@ -358,6 +358,21 @@ class UsageStore {
     }
 
     /**
+     * 画面に出す並び順を保存します。
+     *
+     * **pruneMissingAccounts() は呼びません。** 顔ぶれは変わらないので、
+     * 取得済みの結果を捨てる理由がありません (捨てると、並べ替えるたびに
+     * 一覧のゲージが空になります)。
+     *
+     * @param {string[]} order accountId を並べたもの
+     * @returns {Promise<void>}
+     */
+    async reorderAccounts(order) {
+        this._snapshot = await this.backend.reorderAccounts(order);
+        this._onDidChange.fire();
+    }
+
+    /**
      * @param {string} accountId
      * @returns {Promise<void>}
      */
