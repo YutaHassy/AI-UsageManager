@@ -28,3 +28,7 @@ vscode-extension/LICENSE
 # OS / エディタ
 .DS_Store
 Thumbs.db
+
+# Claude Code のローカル設定・変更履歴トラッキング。開発者のローカル作業ログであり
+# 拡張の動作に関係しないため追跡しない。
+.claude/

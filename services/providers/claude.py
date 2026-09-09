@@ -181,6 +181,11 @@ class ClaudeProvider(UsageProvider):
 
     # ---------------- リクエスト ----------------
 
+    # **Sec-Ch-Ua の版は base.HttpClient.DEFAULT_UA と揃えてください。**
+    # 実ブラウザでは User-Agent と Sec-Ch-Ua のバージョンが必ず一致します。
+    # ここが食い違うと「偽装されたリクエスト」の強いシグナルになり、
+    # Cloudflare のボット判定 (cf-mitigated) を誘発しえます。
+
     def _headers(self, cookie: str) -> Dict[str, str]:
         # sessionKey のみが渡された場合は Cookie 形式に整形する
         cookie_str = (cookie or "").strip()
@@ -193,7 +198,7 @@ class ClaudeProvider(UsageProvider):
             "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
             "Referer": "https://claude.ai/",
             "Origin": "https://claude.ai",
-            "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="140", "Google Chrome";v="140"',
             "Sec-Ch-Ua-Mobile": "?0",
             "Sec-Ch-Ua-Platform": '"Windows"',
             "Sec-Fetch-Dest": "empty",

@@ -5,6 +5,20 @@ All notable changes to the AI-UsageManager extension are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - 2026-09-09
+
+A small one: Claude.ai accounts could be turned away by Cloudflare's bot
+check, not by an expired cookie.
+
+### Fixed
+
+- **Claude.ai requests could be blocked as a bot (403, `cf-mitigated`) even
+  with a fresh cookie.** The `Sec-Ch-Ua` header on Claude's requests still
+  claimed Chromium 120 while the `User-Agent` sent alongside it said Chrome
+  140 — a mismatch a real browser never produces, and one Cloudflare's
+  mitigation can key on. `chatgpt.py` had already been kept in step with the
+  shared `User-Agent` version; `claude.py` had not. The versions now match.
+
 ## [1.8.0] - 2026-08-30
 
 The usage table decided two things on your behalf that it had no business
