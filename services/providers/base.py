@@ -528,6 +528,39 @@ class HttpClient:
 # 見落としやすい形が片方にだけ実装された状態になります。
 
 
+# cmd 形式 (Copy as cURL (cmd)) の escape 文字。^ は「次の1文字をそのまま
+# 読め」の意味なので、外すときも1文字ずつ剥がします (^^ が ^ に戻る)。
+_CMD_ESCAPE = re.compile(r"\^(.)", re.DOTALL)
+
+# 引用符でくくられた引数1つ。**escape された引用符 (\") を跨いで読みます。**
+# ここを `.*?` で最短一致にすると、値の中に引用符を含む Cookie
+# (Intercom の ^{^\^"i_l^\^":0,...^} のような JSON) が来た瞬間に、
+# その手前で切れた欠片だけが取れます。
+_QUOTED_ARG = re.compile(
+    r"""(?P<quote>["'])(?P<value>(?:\\.|(?!(?P=quote)).)*)(?P=quote)""",
+    re.DOTALL,
+)
+
+_COOKIE_HEADER_NAME = re.compile(r"\s*cookie\s*:", re.IGNORECASE)
+
+# Cookie 名として成立しない文字。RFC 6265 の token はもっと狭いのですが、
+# ここで弾きたいのは「Cookie ではないものが Cookie 名の位置に入った」場合
+# だけなので、実在する Cookie 名では絶対に出ない文字に絞ります。
+_NOT_A_COOKIE_NAME = re.compile(r"""[\s"'^;,\\]""")
+
+
+def _unquote_arg(match) -> str:
+    """_QUOTED_ARG の一致から、引数の中身を取り出します。
+
+    backslash を外すのは二重引用符の側だけです。シェルの単引用符の中に
+    escape はなく、そこで外すと Cookie 値の backslash を食います。
+    """
+    value = match.group("value")
+    if match.group("quote") == '"':
+        value = re.sub(r"\\(.)", r"\1", value, flags=re.DOTALL)
+    return value
+
+
 def extract_cookie_header(text: str) -> str:
     """貼り付けられた内容から、Cookie ヘッダの部分だけを取り出します。
 
@@ -544,20 +577,39 @@ def extract_cookie_header(text: str) -> str:
     -b の値を取り出せず、貼り付けの先頭 (curl ... -b ^) が
     そのまま Cookie 名に食い込みます。
 
+    **cmd 形式は先に ^ を外してから読みます。** ^ が付いたまま読もうとすると、
+    値の中の引用符 (^\\^") を「引数の終わり」と読み違えます。実際に
+    claude.ai で起きた壊れ方がこれで、Intercom の Cookie が JSON を値に
+    持っているために -b の値が途中で切れ、sessionKey を含まない欠片だけが
+    取れていました。取れなかった側は貼り付け全体をそのまま Cookie として
+    保存してしまい、curl のコマンド文字列ごと Cookie ヘッダに載って
+    Cloudflare のボット判定 (cf-mitigated: challenge) で 403 になります。
+
     利用者に正しい持ち出し方を1つだけ覚えてもらうのは無理があるので、
     どれで来ても通るようにします。どれにも当てはまらなければ、
     貼られたものをそのまま返して validate_credential に説明させます。
     """
     text = (text or "").strip()
 
-    # "cookie: ..." を含む形 (Copy as cURL / Copy value のヘッダ名つき)
-    match = re.search(r"""cookie\s*:\s*(["']?)(?P<value>[^"'\r\n]+)""", text, re.IGNORECASE)
-    if match:
-        return match.group("value").strip()
+    # cmd 形式はここで素の引用符へ戻し、以降は他の形式と同じ読み方をします。
+    if '^"' in text:
+        text = _CMD_ESCAPE.sub(r"\1", text)
 
-    # curl の -b / --cookie で渡す形 (cmd 形式の ^" にも合わせる)
-    match = re.search(r"""(?:^|\s)(?:-b|--cookie)\s+\^?(["'])(?P<value>.*?)\^?\1""",
-                      text, re.DOTALL)
+    # curl の -b / --cookie で渡す形。**cookie: より先に見ます。**
+    # DevTools の cURL は Cookie を -b に入れるので、こちらのほうが本命です。
+    for flag in re.finditer(r"(?:^|\s)(?:-b|--cookie)\s+", text):
+        arg = _QUOTED_ARG.match(text, flag.end())
+        if arg:
+            return _unquote_arg(arg).strip()
+
+    # "cookie: ..." をヘッダとして持つ形 (-H 'cookie: ...' / Copy value)
+    for arg in _QUOTED_ARG.finditer(text):
+        value = _unquote_arg(arg)
+        if _COOKIE_HEADER_NAME.match(value):
+            return value.split(":", 1)[1].strip()
+
+    # 引用符なしで "cookie: ..." と書かれている形
+    match = re.search(r"""cookie\s*:\s*(?P<value>[^"'\r\n]+)""", text, re.IGNORECASE)
     if match:
         return match.group("value").strip()
 
@@ -565,12 +617,19 @@ def extract_cookie_header(text: str) -> str:
 
 
 def parse_cookie_header(value: str) -> Dict[str, str]:
-    """"name=value; name=value" を辞書にします。"""
+    """"name=value; name=value" を辞書にします。
+
+    **Cookie 名になりえない欠片は落とします。** ここへ来るのは利用者が
+    貼り付けたものなので、取り出しに失敗した貼り付け (curl のコマンド全体
+    など) が混ざりえます。落とさないと `curl --url ^"https://...` のような
+    ものが Cookie 名として cookiejar に入り、そのまま Cookie ヘッダに載って
+    取得先のボット判定に引っかかります。
+    """
     jar = {}
     for part in (value or "").split(";"):
         name, sep, val = part.partition("=")
         name = name.strip()
-        if sep and name:
+        if sep and name and not _NOT_A_COOKIE_NAME.search(name):
             jar[name] = val.strip()
     return jar
 

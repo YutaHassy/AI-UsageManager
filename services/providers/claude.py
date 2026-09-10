@@ -149,13 +149,17 @@ class ClaudeProvider(UsageProvider):
         if not value:
             return ""
 
-        jar = parse_cookie_header(value)
-        if self.session_cookie_name in jar:
-            return ""
-        # sessionKey の値だけを貼られた形 (sk-ant-sid01-...)
-        if self.credential_marker in value and "=" not in value:
-            return ""
-
+        # **curl のままかどうかを最初に見ます。** ここへ来る value は
+        # normalize_credential を通ったあとなので、まだ curl の形をして
+        # いるなら「Cookie を取り出せなかった」ということです。
+        #
+        # jar の判定より先に置くのは、取り出しに失敗した貼り付けでも
+        # sessionKey は見つかってしまうためです。curl のコマンド文字列を
+        # ";" で切れば ` sessionKey=sk-ant-...` という欠片が普通に現れるので、
+        # 先に jar を見ると**この警告が出ないまま貼り付け全体が保存されます**。
+        # そうなると Cookie ヘッダに curl のコマンドが載って取得先の
+        # ボット判定に引っかかり、症状は 403 として出ます
+        # (base.extract_cookie_header の説明を参照)。
         if value.startswith("curl") or " -H " in value:
             return t(
                 "No cookie could be taken out of what you pasted.\n"
@@ -163,6 +167,13 @@ class ClaudeProvider(UsageProvider):
                 'Type "organizations" into the Filter box to narrow the list,\n'
                 'then run "Copy as cURL" again on one of the remaining rows.'
             )
+
+        jar = parse_cookie_header(value)
+        if self.session_cookie_name in jar:
+            return ""
+        # sessionKey の値だけを貼られた形 (sk-ant-sid01-...)
+        if self.credential_marker in value and "=" not in value:
+            return ""
 
         return t(
             "{cookie} was not found.\n"

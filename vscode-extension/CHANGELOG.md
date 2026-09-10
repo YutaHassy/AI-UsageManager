@@ -5,6 +5,42 @@ All notable changes to the AI-UsageManager extension are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.2] - 2026-09-10
+
+The same 403 as last time, from a different cause. 1.8.1 fixed a header that
+could invite Cloudflare's bot check. This one is about what we were putting in
+the `Cookie` header in the first place.
+
+### Fixed
+
+- **A cookie pasted as "Copy as cURL (cmd)" could be stored as the whole curl
+  command, and the command was then sent as the `Cookie` header.** claude.ai
+  sets an Intercom cookie whose value is JSON, so the cmd format escapes the
+  quotes inside it as `^\^"`. `extract_cookie_header()` read the `-b` argument
+  with a lazy `.*?`, which stopped at that first quote and returned a fragment
+  — one that no longer contained `sessionKey`. `normalize_credential()` saw no
+  session cookie in the fragment and fell back to storing the pasted text
+  verbatim, so `curl --url ^"https://claude.ai/...` ended up in the cookie jar
+  as a cookie name. Cloudflare answered the resulting header with
+  `cf-mitigated: challenge` and a 403.
+
+  **The cookie was never the problem, which is why re-pasting it did not
+  help** — the same paste produced the same broken value every time. The cmd
+  escaping is now removed before the arguments are read, and quoted arguments
+  are read across escaped quotes rather than stopping at the first one.
+
+- **A paste that could not be reduced to a cookie is now reported instead of
+  saved silently.** Splitting a curl command on `;` turns up a stray
+  ` sessionKey=...` fragment, so the check that looked for the session cookie
+  first found one and raised nothing. The "no cookie could be taken out of what
+  you pasted" warning is now decided before that check.
+
+- **Fragments that cannot be cookie names are dropped on the way into the
+  cookie jar.** One filter in `parse_cookie_header()` keeps a failed extraction
+  anywhere in the codebase from reaching a provider as a `Cookie` header.
+
+Gemini pastes go through the same extraction and get the same fix.
+
 ## [1.8.1] - 2026-09-09
 
 A small one: Claude.ai accounts could be turned away by Cloudflare's bot

@@ -57,7 +57,8 @@ from services.usage_status import (                                   # noqa: E4
 from services.config_manager import ConfigLoadError, ConfigManager    # noqa: E402
 from services.providers import (                                      # noqa: E402
     AMOUNT, AUTH_COOKIE, MONEY, PERCENT, UsageError,
-    amount_metric, apply_budget, build_result, money_metric, percent_metric,
+    amount_metric, apply_budget, build_result, money_metric, parse_cookie_header,
+    percent_metric,
 )
 from services.providers.anthropic_cost import AnthropicCostProvider   # noqa: E402
 from services.providers.antigravity import AntigravityProvider        # noqa: E402
@@ -314,6 +315,89 @@ class TestUsageParsing(unittest.TestCase):
     def test_out_of_range_is_clamped(self):
         self.assertEqual(self._util({"five_hour": {"utilization": 150}}), 100.0)
         self.assertEqual(self._util({"five_hour": {"utilization": -5}}), 0.0)
+
+
+class TestClaudePastedCookie(unittest.TestCase):
+    """claude.ai の Cookie を貼り付けから取り出すところ。
+
+    **値に引用符を含む Cookie が現実に来ます。** claude.ai は Intercom の
+    Cookie を置いており、その値は JSON ({"i_l":0,...}) です。Windows の
+    「Copy as cURL (cmd)」はこれを ^{^\\^"i_l^\\^":0,...^} と escape するため、
+    -b の値を「最初に現れた引用符まで」で読むと途中で切れます。
+
+    切れると sessionKey が欠け、normalize_credential が貼り付け全体を
+    Cookie として保存してしまい、curl のコマンド文字列がそのまま Cookie
+    ヘッダに載ります。**症状は認証エラーではなく 403 (Cloudflare の
+    cf-mitigated: challenge) として出る**ので、Cookie の貼り直しでは
+    直りません。実際に起きた壊れ方です。
+    """
+
+    # 値に引用符を含む Cookie (Intercom) を必ず混ぜること。
+    COOKIES = (
+        'anthropic-device-id=dev-1; '
+        'intercom-session-lupk8zyo={"i_l":0,"i_b":"x"}; '
+        'sessionKey=sk-ant-sid01-AAA; '
+        'cf_clearance=ccc; '
+        'lastActiveOrg=03673c81-f4a0-475d-a8cd-93f2316d6516'
+    )
+
+    @staticmethod
+    def _as_cmd(text: str) -> str:
+        """Chrome / Edge の「Copy as cURL (cmd)」と同じ形へ escape する。"""
+        escaped = text.replace('"', '\\^"').replace("&", "^&")
+        escaped = escaped.replace("{", "^{").replace("}", "^}")
+        return f'^"{escaped}^"'
+
+    def test_a_cookie_value_containing_quotes_survives_every_paste_format(self):
+        provider = ClaudeProvider()
+        variants = {
+            "Copy value (そのまま)": self.COOKIES,
+            "Copy as cURL (bash)":
+                f"curl 'https://claude.ai/api/organizations' \\\n"
+                f"  -H 'accept: */*' \\\n"
+                f"  -b '{self.COOKIES}' \\\n"
+                f"  -H 'user-agent: Mozilla/5.0'",
+            "Copy as cURL (cmd)":
+                f'curl --url {self._as_cmd("https://claude.ai/api/organizations")} ^\n'
+                f'  -H {self._as_cmd("accept: */*")} ^\n'
+                f'  -b {self._as_cmd(self.COOKIES)} ^\n'
+                f'  -H {self._as_cmd("user-agent: Mozilla/5.0")}',
+            "ヘッダ名つき1行": f"cookie: {self.COOKIES}",
+        }
+        for name, pasted in variants.items():
+            with self.subTest(copied_as=name):
+                normalized = provider.normalize_credential(pasted)
+                jar = parse_cookie_header(normalized)
+                self.assertEqual(jar.get("sessionKey"), "sk-ant-sid01-AAA")
+                # **cf_clearance を落とさないこと。** Cloudflare の通行証で、
+                # 欠けると 403 になる (normalize_credential の説明を参照)。
+                self.assertEqual(jar.get("cf_clearance"), "ccc")
+                self.assertNotIn("curl", normalized)
+                self.assertEqual(provider.validate_credential(normalized), "")
+
+    def test_a_paste_that_could_not_be_reduced_to_a_cookie_is_reported(self):
+        """取り出せなかった貼り付けを黙って保存しないこと。
+
+        curl のコマンドを ";" で切れば ` sessionKey=...` という欠片は
+        普通に現れるので、jar を先に見ると警告が出ないまま保存される。
+        """
+        provider = ClaudeProvider()
+        unparsable = (
+            "curl --url https://claude.ai/api/organizations "
+            "-H accept: */* sessionKey=sk-ant-sid01-AAA"
+        )
+        self.assertNotEqual(provider.validate_credential(unparsable), "")
+
+    def test_junk_is_not_allowed_into_the_cookie_jar(self):
+        """Cookie 名になりえない欠片は落とすこと。
+
+        落とすのは cookiejar へ入る手前の1箇所だけで足りる
+        (base._stash_cookies が parse_cookie_header を通す)。
+        """
+        jar = parse_cookie_header(
+            'curl --url ^"https://claude.ai/x?a=1; sessionKey=sk-ant-sid01-AAA'
+        )
+        self.assertEqual(jar, {"sessionKey": "sk-ant-sid01-AAA"})
 
 
 class TestAuthErrorFlag(unittest.TestCase):
