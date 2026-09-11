@@ -5,6 +5,36 @@ All notable changes to the AI-UsageManager extension are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.3] - 2026-09-11
+
+A Claude.ai account that had been working came back as "sign in again"
+about a day and a half after its cookie was pasted, with the cookie itself
+intact. This release keeps hold of a replacement key when one is offered, and
+writes down when a key dies so the next one can be explained.
+
+### Changed
+
+- **A `sessionKey` that claude.ai replaces mid-flight is now saved.**
+  claude.ai replaces `sessionKey` on its own schedule, server-side, via
+  `Set-Cookie` — the page's JavaScript never touches the cookie, and the
+  `sessionKeyLC` cookie next to it is the last-changed timestamp it
+  publishes. The old value is then refused with `account_session_invalid`.
+  When that replacement arrives in a response to one of *our* requests, the
+  cookie jar picked it up and the process kept working — but the config still
+  held the old key, so the next backend start (the next time VS Code was
+  opened) failed with "sign in again". `ClaudeProvider.reissued_credential`
+  now hands the new value back for saving, the same way ChatGPT and Gemini
+  already do. It writes only when `sessionKey` itself changed, so the
+  30-minute `__cf_bm` churn does not turn into a config write per fetch.
+
+  This does not cover a replacement that happens in your browser: the pasted
+  key dies and there is nothing on this side to renew. Paste again.
+
+- **An authentication failure is now written to `app.log` with the time.**
+  The message in the panel goes away with the output channel; the log is the
+  only place to find out afterwards how long a key lasted. No credential is
+  written.
+
 ## [1.8.2] - 2026-09-10
 
 The same 403 as last time, from a different cause. 1.8.1 fixed a header that

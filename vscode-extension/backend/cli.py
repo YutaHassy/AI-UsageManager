@@ -755,6 +755,15 @@ class Backend:
             # Cookie を取り直していました。その仕組みは PySide6 (QtWebEngine)
             # に乗ったものだったので、あれを外した時点で一緒に無くなりました。
             # 利用者には期限切れとして伝わり、編集画面で貼り直してもらいます。
+            #
+            # **いつ失効したかは app.log に残します。** 画面に出る文言は
+            # 出力チャンネルと一緒に消えるので、あとから「何日持ったか」を
+            # 調べる手段がこれしかありません。claude.ai のようにサーバ側で
+            # sessionKey が置き換わる取得先では、その時刻をブラウザ側の
+            # 最終変更時刻 (sessionKeyLC) と突き合わせるのが切り分けの
+            # 出発点になります。資格情報そのものは書きません。
+            logger.warning("'%s' (%s) の取得が認証エラーになりました: %s",
+                           account.name, provider.id, e)
             reply_error(request_id, str(e), True)
             return
 

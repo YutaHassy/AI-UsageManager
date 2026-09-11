@@ -400,6 +400,75 @@ class TestClaudePastedCookie(unittest.TestCase):
         self.assertEqual(jar, {"sessionKey": "sk-ant-sid01-AAA"})
 
 
+class TestClaudeSessionReissue(unittest.TestCase):
+    """claude.ai がサーバ側で置き換えてきた sessionKey を保存し直すこと。
+
+    置き換えは応答の Set-Cookie で来る (フロントエンドは sessionKey に触らない)。
+    cookiejar は受け取っているので同じプロセスの間は通り続けるが、保存に
+    反映しないとバックエンドを立ち上げ直した瞬間に古い鍵で弾かれる。
+    """
+
+    STORED = "anthropic-device-id=dev-1; sessionKey=sk-ant-sid02-OLD; cf_clearance=ccc"
+
+    def provider_with_jar(self, *server_cookies):
+        provider = ClaudeProvider()
+        # 取得と同じ経路で自分の Cookie を jar に入れる
+        provider.http._stash_cookies(self.STORED, "https://claude.ai/api/x")
+        for name, value in server_cookies:
+            # サーバの Set-Cookie は Domain=.claude.ai で来る (先頭にドット)
+            provider.http.session.cookies.set(name, value, domain=".claude.ai", path="/")
+        return provider
+
+    def test_nothing_is_written_back_when_the_key_did_not_change(self):
+        provider = self.provider_with_jar()
+        self.assertEqual(provider.reissued_credential(self.STORED), "")
+
+    def test_a_short_lived_cookie_alone_does_not_cause_a_write(self):
+        """__cf_bm は 30 分ごとに変わる。それで毎回書くのは取得のたびの
+        ディスク書き込みになる (chatgpt.RENEW_INTERVAL_SEC と同じ線)。"""
+        provider = self.provider_with_jar(("__cf_bm", "fresh"), ("cf_clearance", "ddd"))
+        self.assertEqual(provider.reissued_credential(self.STORED), "")
+
+    def test_a_reissued_key_replaces_the_stored_one(self):
+        provider = self.provider_with_jar(
+            ("sessionKey", "sk-ant-sid02-NEW"),
+            ("cf_clearance", "ddd"),      # 保存済みの名前 → 一緒に新しくなる
+            ("__cf_bm", "fresh"),         # 保存済みに無い名前 → 足さない
+        )
+        refreshed = parse_cookie_header(provider.reissued_credential(self.STORED))
+        self.assertEqual(refreshed, {
+            "anthropic-device-id": "dev-1",
+            "sessionKey": "sk-ant-sid02-NEW",
+            "cf_clearance": "ddd",
+        })
+
+    def test_fetch_usage_hands_the_reissued_key_back_for_saving(self):
+        """cli.py は戻り値の "credential" を見て保存する (gemini / chatgpt と同じ)。"""
+        provider = self.provider_with_jar(("sessionKey", "sk-ant-sid02-NEW"))
+        provider.http.get_json = lambda url, headers, what, params=None: {
+            "five_hour": {"utilization": 14.0, "resets_at": None},
+        }
+        result = provider.fetch_usage(self.STORED, organization_id="org-1")
+        self.assertIn("sessionKey=sk-ant-sid02-NEW", result["credential"])
+
+        # 置き換わっていなければキー自体が無い (cli.py は pop で見る)
+        provider = self.provider_with_jar()
+        provider.http.get_json = lambda url, headers, what, params=None: {
+            "five_hour": {"utilization": 14.0, "resets_at": None},
+        }
+        result = provider.fetch_usage(self.STORED, organization_id="org-1")
+        self.assertNotIn("credential", result)
+
+    def test_a_bare_session_key_is_handled_too(self):
+        """sessionKey の値だけを貼った登録 (sk-ant-sid01-...) でも動くこと。"""
+        provider = ClaudeProvider()
+        provider.http._stash_cookies("sessionKey=sk-ant-sid02-OLD", "https://claude.ai/api/x")
+        provider.http.session.cookies.set("sessionKey", "sk-ant-sid02-NEW",
+                                          domain=".claude.ai", path="/")
+        self.assertEqual(provider.reissued_credential("sk-ant-sid02-OLD"),
+                         "sessionKey=sk-ant-sid02-NEW")
+
+
 class TestAuthErrorFlag(unittest.TestCase):
     """資格情報の失効を他のエラーと区別できること (自動再ログインの起点になる)。"""
 

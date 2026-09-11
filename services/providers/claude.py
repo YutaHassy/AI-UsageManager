@@ -197,11 +197,20 @@ class ClaudeProvider(UsageProvider):
     # ここが食い違うと「偽装されたリクエスト」の強いシグナルになり、
     # Cloudflare のボット判定 (cf-mitigated) を誘発しえます。
 
-    def _headers(self, cookie: str) -> Dict[str, str]:
-        # sessionKey のみが渡された場合は Cookie 形式に整形する
+    def _cookie_header(self, cookie: str) -> str:
+        """保存されている資格情報を Cookie ヘッダの形にします。
+
+        sessionKey の値だけを貼られた場合 (sk-ant-sid01-...) はここで
+        Cookie 形式へ整えます。_headers と reissued_credential の両方が
+        同じ形を前提にするので、整形は1箇所に置きます。
+        """
         cookie_str = (cookie or "").strip()
         if cookie_str and "sessionKey=" not in cookie_str and not cookie_str.startswith("{"):
             cookie_str = f"sessionKey={cookie_str}"
+        return cookie_str
+
+    def _headers(self, cookie: str) -> Dict[str, str]:
+        cookie_str = self._cookie_header(cookie)
 
         return {
             "User-Agent": self.http.user_agent,
@@ -278,7 +287,70 @@ class ClaudeProvider(UsageProvider):
         if not isinstance(data, dict):
             raise UsageError(t("The response for usage is malformed."))
 
-        return self.parse_usage_response(data, organization_id=org_id)
+        result = self.parse_usage_response(data, organization_id=org_id)
+
+        # ここまで来た = セッションは生きている。サーバがこの取得の応答で
+        # sessionKey を置き換えてきていたら、**今この場で保存し直します**
+        # (chatgpt / gemini と同じ考え方。失効を検知してからでは間に合わない)。
+        reissued = self.reissued_credential(credential)
+        if reissued:
+            result["credential"] = reissued
+        return result
+
+    def reissued_credential(self, cookie: str) -> str:
+        """サーバが Set-Cookie で置き換えてきた sessionKey を、保存できる形で返します。
+
+        置き換わっていなければ空文字です。
+
+        **claude.ai の sessionKey はサーバ主導で置き換わります。** 利用者の
+        ブラウザでは、ある日突然 sessionKey が新しい値になり (sessionKeyLC
+        という「最終変更時刻」の Cookie が一緒に更新される)、古い値は
+        `account_session_invalid` で弾かれるようになります。フロントエンドの
+        JS は sessionKey に一切触らない (HttpOnly) ので、これはサーバが
+        応答の Set-Cookie で行っています。
+
+        拡張はブラウザから持ち出した鍵を使い回しているだけなので、
+        置き換えがブラウザ側で起きれば手の打ちようがありません
+        (利用者に貼り直してもらう — 1.7.0 で埋め込みブラウザを畳んだ時点で
+        受け入れた制約です)。**しかし置き換えがこちらの取得の応答で起きた
+        場合は別です。** HttpClient の cookiejar は新しい値を受け取っていて、
+        同じプロセスの間は取得も通り続けます。ところが保存には反映されない
+        ので、バックエンドを立ち上げ直した瞬間に古い鍵で叩いて失効扱いに
+        なります。「しばらくは使えていたのに、VS Code を開き直したら
+        要再ログインになった」がこの症状です。
+
+        **書き戻すのは sessionKey が変わったときだけです。** __cf_bm のように
+        30 分で入れ替わる Cookie も cookiejar には溜まりますが、それで毎回
+        設定を書き換えると取得のたびにディスクへ書くことになります
+        (chatgpt.RENEW_INTERVAL_SEC が守っているのと同じ線)。sessionKey が
+        変わった回に限り、保存済みの名前と重なる Cookie をまとめて
+        新しい値へ差し替えます。**保存済みに無い名前は足しません** —
+        持ち出したときの Cookie の形をこちらで勝手に膨らませないためです。
+        """
+        stored = parse_cookie_header(self._cookie_header(cookie))
+        current = stored.get(self.session_cookie_name)
+        if not current:
+            return ""
+
+        # 自分で入れたもの (= 保存済みと同じ値) は除き、サーバが置いた
+        # ものだけを拾う。同じ名前が claude.ai と .claude.ai の両方に
+        # 載ることがあり、どちらが先に並ぶかは決まっていないため、
+        # 「値が違うものが1つでもあれば更新」と見る。
+        issued: Dict[str, str] = {}
+        for c in self.http.session.cookies:
+            if not (c.domain or "").lstrip(".").endswith(self.cookie_domain):
+                continue
+            if c.name in stored and c.value == stored[c.name]:
+                continue
+            issued[c.name] = c.value
+
+        if not issued.get(self.session_cookie_name):
+            return ""
+
+        merged = dict(stored)
+        merged.update((name, value) for name, value in issued.items() if name in stored)
+        logger.info("claude.ai が sessionKey を再発行してきたので保存し直します。")
+        return "; ".join(f"{name}={value}" for name, value in merged.items())
 
     # ---------------- レスポンス解釈 ----------------
 
