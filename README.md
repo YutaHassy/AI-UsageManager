@@ -147,7 +147,18 @@ service decides.
   (`RENEW_INTERVAL_SEC` in `services/providers/chatgpt.py`).
 - **Gemini is renewed the same way**, through `GeminiProvider.rotate_cookies`.
   `__Secure-1PSIDTS` is short-lived, so the interval there is 10 minutes.
-- **Claude and Antigravity have no renewal.**
+- **Claude cannot be extended, but a replacement is kept.** claude.ai replaces
+  `sessionKey` on its own schedule, server-side, through `Set-Cookie` (the
+  page's JavaScript never touches the cookie; `sessionKeyLC` is the
+  last-changed timestamp it publishes alongside). The old value is then
+  refused with `account_session_invalid`. When that replacement arrives in a
+  response to *our* request, `ClaudeProvider.reissued_credential` hands the
+  new value back for saving (since 1.8.3) — without that, the process kept
+  working on the cookie jar while the config still held the dead key, and the
+  next backend start failed with "sign in again". When the replacement
+  happens in your browser instead, the pasted key dies and there is nothing
+  to renew: paste again.
+- **Antigravity has no renewal.**
 
 **Renewal only runs after the usage call succeeds.** A session can only be
 extended while it is still alive, so there is nothing to try once one has
@@ -235,7 +246,11 @@ python vscode-extension/build_vsix.py
 
 **資格情報の寿命**: ChatGPT と Gemini は、取得に成功するたびに資格情報を
 延命して保存し直します (ChatGPT はセッションを約90日先へ押し出し、書き戻しは
-1時間おき)。Claude と Antigravity に延命の仕組みはありません。**延命は取得が
+1時間おき)。Claude は延命できませんが、claude.ai がサーバ側で `sessionKey` を
+置き換えてきた場合 (古い値は `account_session_invalid` で弾かれるように
+なります)、それがこちらの取得の応答で来たときは新しい値を保存し直します
+(1.8.3〜)。置き換えがブラウザ側で起きたときは貼り直しが必要です。
+Antigravity に延命の仕組みはありません。**延命は取得が
 成功したあとにだけ走ります** — セッションは生きている間しか延ばせないためです。
 
 次の3点は、このアプリの側では回避できません。
